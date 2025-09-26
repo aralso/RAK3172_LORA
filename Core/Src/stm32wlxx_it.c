@@ -55,10 +55,10 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
-extern RTC_HandleTypeDef hrtc;
+extern UART_HandleTypeDef hlpuart1;
 extern SUBGHZ_HandleTypeDef hsubghz;
-extern DMA_HandleTypeDef hdma_usart2_tx;
-extern UART_HandleTypeDef huart2;
+extern TIM_HandleTypeDef htim16;
+
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -142,19 +142,6 @@ void UsageFault_Handler(void)
 }
 
 /**
-  * @brief This function handles System service call via SWI instruction.
-  */
-void SVC_Handler(void)
-{
-  /* USER CODE BEGIN SVCall_IRQn 0 */
-
-  /* USER CODE END SVCall_IRQn 0 */
-  /* USER CODE BEGIN SVCall_IRQn 1 */
-
-  /* USER CODE END SVCall_IRQn 1 */
-}
-
-/**
   * @brief This function handles Debug monitor.
   */
 void DebugMon_Handler(void)
@@ -167,32 +154,6 @@ void DebugMon_Handler(void)
   /* USER CODE END DebugMonitor_IRQn 1 */
 }
 
-/**
-  * @brief This function handles Pendable request for system service.
-  */
-void PendSV_Handler(void)
-{
-  /* USER CODE BEGIN PendSV_IRQn 0 */
-
-  /* USER CODE END PendSV_IRQn 0 */
-  /* USER CODE BEGIN PendSV_IRQn 1 */
-
-  /* USER CODE END PendSV_IRQn 1 */
-}
-
-/**
-  * @brief This function handles System tick timer.
-  */
-void SysTick_Handler(void)
-{
-  /* USER CODE BEGIN SysTick_IRQn 0 */
-
-  /* USER CODE END SysTick_IRQn 0 */
-  /* USER CODE BEGIN SysTick_IRQn 1 */
-
-  /* USER CODE END SysTick_IRQn 1 */
-}
-
 /******************************************************************************/
 /* STM32WLxx Peripheral Interrupt Handlers                                    */
 /* Add here the Interrupt Handlers for the used peripherals.                  */
@@ -201,59 +162,17 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /**
-  * @brief This function handles RTC Tamper, RTC TimeStamp, LSECSS and RTC SSRU Interrupts.
+  * @brief This function handles LPUART1 Interrupt.
   */
-void TAMP_STAMP_LSECSS_SSRU_IRQHandler(void)
+void LPUART1_IRQHandler(void)
 {
-  /* USER CODE BEGIN TAMP_STAMP_LSECSS_SSRU_IRQn 0 */
+  /* USER CODE BEGIN LPUART1_IRQn 0 */
 
-  /* USER CODE END TAMP_STAMP_LSECSS_SSRU_IRQn 0 */
-  HAL_RTCEx_SSRUIRQHandler(&hrtc);
-  /* USER CODE BEGIN TAMP_STAMP_LSECSS_SSRU_IRQn 1 */
+  /* USER CODE END LPUART1_IRQn 0 */
+  HAL_UART_IRQHandler(&hlpuart1);
+  /* USER CODE BEGIN LPUART1_IRQn 1 */
 
-  /* USER CODE END TAMP_STAMP_LSECSS_SSRU_IRQn 1 */
-}
-
-/**
-  * @brief This function handles DMA1 Channel 1 Interrupt.
-  */
-void DMA1_Channel1_IRQHandler(void)
-{
-  /* USER CODE BEGIN DMA1_Channel1_IRQn 0 */
-
-  /* USER CODE END DMA1_Channel1_IRQn 0 */
-  HAL_DMA_IRQHandler(&hdma_usart2_tx);
-  /* USER CODE BEGIN DMA1_Channel1_IRQn 1 */
-
-  /* USER CODE END DMA1_Channel1_IRQn 1 */
-}
-
-/**
-  * @brief This function handles USART2 Interrupt.
-  */
-void USART2_IRQHandler(void)
-{
-  /* USER CODE BEGIN USART2_IRQn 0 */
-
-  /* USER CODE END USART2_IRQn 0 */
-  HAL_UART_IRQHandler(&huart2);
-  /* USER CODE BEGIN USART2_IRQn 1 */
-
-  /* USER CODE END USART2_IRQn 1 */
-}
-
-/**
-  * @brief This function handles RTC Alarms (A and B) Interrupt.
-  */
-void RTC_Alarm_IRQHandler(void)
-{
-  /* USER CODE BEGIN RTC_Alarm_IRQn 0 */
-
-  /* USER CODE END RTC_Alarm_IRQn 0 */
-  HAL_RTC_AlarmIRQHandler(&hrtc);
-  /* USER CODE BEGIN RTC_Alarm_IRQn 1 */
-
-  /* USER CODE END RTC_Alarm_IRQn 1 */
+  /* USER CODE END LPUART1_IRQn 1 */
 }
 
 /**
