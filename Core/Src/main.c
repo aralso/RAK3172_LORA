@@ -16,6 +16,13 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
+/*
+ TODO : 2e uart, pile envoi message lora, sequenceur event, mesure mode STOP, reception/traitement message,
+ clignot sorties, pwm, eeprom lecture/ecriture, log en flash, antirebond 2 boutons
+
+ v1 09/2025 : STM32CubeMX + freertos+subGhz+LPUart1+RTC+print_log
+
+*/
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
@@ -23,12 +30,17 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
-//#include toto
+#include "functions.h"
+#include <stdio.h>    // Pour sprintf
+#include <string.h>   // Pour strlen
+#include <stdarg.h>   // Pour va_list (si vous utilisez print_log)
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+
+
 
 /* USER CODE END PTD */
 
@@ -148,6 +160,10 @@ int main(void)
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
 
+  LOG_INFO("=== RAK3172 LoRa System Started ===");
+  LOG_INFO("Log level: %d", get_log_level());
+  LOG_DEBUG("Debug logging enabled");
+
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -167,7 +183,7 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of Event_Queue */
-  Event_QueueHandle = osMessageQueueNew (16, sizeof(uint16_t), &Event_Queue_attributes);
+  Event_QueueHandle = osMessageQueueNew (16, sizeof(event_t), &Event_Queue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -393,6 +409,17 @@ static void MX_SUBGHZ_Init(void)
   }
   /* USER CODE BEGIN SUBGHZ_Init 2 */
 
+  // Configuration LoRa
+  // Fréquence 868 MHz
+  uint8_t freq_config[] = {0x00, 0x00, 0x00, 0x00}; // À ajuster selon votre fréquence
+  HAL_SUBGHZ_WriteRegisters(&hsubghz, 0x08, freq_config, 4);
+
+  // Configuration LoRa (SF7, BW125, CR4/5)
+  uint8_t lora_config[] = {0x72, 0x74, 0x00};
+  HAL_SUBGHZ_WriteRegisters(&hsubghz, 0x1E, lora_config, 3);
+
+  LOG_INFO("SUBGHZ LoRa configured");
+
   /* USER CODE END SUBGHZ_Init 2 */
 
 }
@@ -435,6 +462,72 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+/**
+ * @brief Envoyer un message LoRa
+ * @param message: Message à envoyer (string)
+ * @retval HAL_StatusTypeDef: Statut de l'opération
+ */
+HAL_StatusTypeDef send_lora_message(const char* message)
+{
+    uint8_t radio_status;
+    uint16_t message_length = strlen(message);
+
+    // Vérifier que le radio est libre
+    if (HAL_SUBGHZ_ReadRegister(&hsubghz, 0x01, &radio_status) != HAL_OK) {
+        LOG_ERROR("Failed to read radio status");
+        return HAL_ERROR;
+    }
+
+    if (radio_status & 0x01) { // En transmission
+        LOG_WARNING("LoRa radio busy");
+        return HAL_BUSY;
+    }
+
+    // Écrire le message dans le buffer radio
+    if (HAL_SUBGHZ_WriteBuffer(&hsubghz, 0x00, (uint8_t*)message, message_length) != HAL_OK) {
+        LOG_ERROR("Failed to write LoRa buffer");
+        return HAL_ERROR;
+    }
+
+    // Démarrer la transmission
+    uint8_t tx_cmd = 0x83; // Commande TX
+    HAL_StatusTypeDef status = HAL_SUBGHZ_ExecSetCmd(&hsubghz, tx_cmd, NULL, 0);
+
+    if (status == HAL_OK) {
+        LOG_INFO("LoRa transmission started: %s", message);
+    } else {
+        LOG_ERROR("Failed to start LoRa transmission: %d", status);
+    }
+
+    return status;
+}
+
+/**
+ * @brief Envoyer un événement dans la queue
+ * @param type: Type d'événement
+ * @param source: Source de l'événement
+ * @param data: Données de l'événement
+ * @retval osStatus_t: Statut de l'envoi
+ */
+osStatus_t send_event(uint8_t type, uint8_t source, uint16_t data)
+{
+    event_t evt;
+    evt.type = type;
+    evt.source = source;
+    evt.data = data;
+    return osMessageQueuePut(Event_QueueHandle, &evt, 0, 0);
+}
+
+/**
+ * @brief Envoyer un événement simple
+ * @param type: Type d'événement
+ * @retval osStatus_t: Statut de l'envoi
+ */
+osStatus_t send_simple_event(uint8_t type)
+{
+    return send_event(type, SOURCE_SYSTEM, 0);
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -466,11 +559,40 @@ void LORA_RXTsk(void *argument)
 {
   /* USER CODE BEGIN LORA_RXTsk */
   /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END LORA_RXTsk */
+	uint8_t rx_buffer[64];
+	uint8_t radio_status;
+
+	LOG_INFO("LoRa RX Task started");
+
+	for(;;)
+	{
+		// Vérifier l'état du radio
+		if (HAL_SUBGHZ_ReadRegister(&hsubghz, 0x01, &radio_status) == HAL_OK) {
+
+			// Vérifier si un message est disponible
+			if (radio_status & 0x02) { // Bit RX_DONE
+				LOG_DEBUG("LoRa message received");
+
+				// Lire le message depuis le buffer radio
+				if (HAL_SUBGHZ_ReadBuffer(&hsubghz, 0x00, rx_buffer, 64) == HAL_OK) {
+					LOG_INFO("Received LoRa message: %s", rx_buffer);
+		            send_event(EVENT_LORA_RECEIVED, SOURCE_LORA, strlen((char*)rx_buffer));
+				} else {
+					LOG_ERROR("Failed to read LoRa buffer");
+				}
+
+				// Effacer le flag RX_DONE
+				HAL_SUBGHZ_WriteRegister(&hsubghz, 0x01, 0x02);
+			} else {
+				LOG_VERBOSE("No LoRa message");
+			}
+		} else {
+			LOG_WARNING("Failed to read radio status");
+		}
+
+		osDelay(1000);
+	}
+	 /* USER CODE END LORA_RXTsk */
 }
 
 /* USER CODE BEGIN Header_LORA_TXTsk */
@@ -484,9 +606,61 @@ void LORA_TXTsk(void *argument)
 {
   /* USER CODE BEGIN LORA_TXTsk */
   /* Infinite loop */
+
+  uint32_t message_count = 0;
+  uint8_t tx_buffer[64];
+  uint8_t radio_status;
+
+  LOG_INFO("LoRa TX Task started");
+
   for(;;)
   {
-    osDelay(1);
+	  // Attendre un délai
+	  osDelay(30000);
+
+	  // Créer un message avec timestamp
+	  uint32_t timestamp = HAL_GetTick() / 1000; // secondes
+	  sprintf((char *)tx_buffer, "LoRa message #%lu at %lu s", message_count++, timestamp);
+
+       LOG_DEBUG("Sending LoRa message: %s", tx_buffer);
+
+       // Vérifier que le radio est libre
+       if (HAL_SUBGHZ_ReadRegister(&hsubghz, 0x01, &radio_status) == HAL_OK) {
+           if (!(radio_status & 0x01)) { // Pas en transmission
+
+               // Écrire le message dans le buffer radio
+               if (HAL_SUBGHZ_WriteBuffer(&hsubghz, 0x00, tx_buffer, strlen((char*)tx_buffer)) == HAL_OK) {
+
+                   // Démarrer la transmission
+                   uint8_t tx_cmd = 0x83; // Commande TX
+                   if (HAL_SUBGHZ_ExecSetCmd(&hsubghz, tx_cmd, NULL, 0) == HAL_OK) {
+                       LOG_INFO("LoRa transmission started");
+
+                       // Attendre la fin de transmission
+                       osDelay(100);
+
+                       // Vérifier le statut
+                       if (HAL_SUBGHZ_ReadRegister(&hsubghz, 0x01, &radio_status) == HAL_OK) {
+                           if (radio_status & 0x08) { // TX_DONE
+                               LOG_INFO("LoRa message sent successfully");
+                               send_event(EVENT_LORA_SENT, SOURCE_LORA, message_count);
+                           } else {
+                               LOG_ERROR("LoRa transmission failed");
+                               send_event(EVENT_ERROR, SOURCE_LORA, 1);
+                           }
+                       }
+                   } else {
+                       LOG_ERROR("Failed to start LoRa transmission");
+                   }
+               } else {
+                   LOG_ERROR("Failed to write LoRa buffer");
+               }
+           } else {
+               LOG_WARNING("LoRa radio busy");
+           }
+       } else {
+           LOG_ERROR("Failed to read radio status");
+       }
   }
   /* USER CODE END LORA_TXTsk */
 }
@@ -501,15 +675,152 @@ void LORA_TXTsk(void *argument)
 void Appli_Tsk(void *argument)
 {
   /* USER CODE BEGIN Appli_Tsk */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+
+    event_t evt;
+    osStatus_t status;
+
+    for(;;)
+    {
+        // Attendre un événement (bloque tant qu'il n'y a rien)
+        status = osMessageQueueGet(Event_QueueHandle, &evt, NULL, osWaitForever);
+
+        if (status == osOK)
+        {
+			// Traiter l'événement reçu
+			LOG_DEBUG("Processing event: type=%d, source=%d, data=%d",
+					  evt.type, evt.source, evt.data);
+
+			switch (evt.type) {
+				case EVENT_INIT: {
+					LOG_INFO("System initialization event");
+					// Actions d'initialisation
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET); // LED ON
+					osDelay(1000);
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET); // LED OFF
+					break;
+				}
+
+				case EVENT_BUTTON_PRESSED: {
+					LOG_INFO("Button pressed event");
+					// Actions pour bouton pressé
+					HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_1); // Toggle LED
+
+					// Envoyer message LoRa
+					char message[] = "Button pressed!";
+					send_lora_message(message);
+					break;
+				}
+
+				case EVENT_LORA_RECEIVED: {
+					LOG_INFO("LoRa message received event");
+					// Actions pour message LoRa reçu
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET); // LED ON
+					osDelay(500);
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET); // LED OFF
+					break;
+				}
+
+				case EVENT_LORA_SENT: {
+					LOG_INFO("LoRa message sent event");
+					// Actions pour message LoRa envoyé
+					for (int i = 0; i < 3; i++) {
+						HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
+						osDelay(100);
+						HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+						osDelay(100);
+					}
+					break;
+				}
+
+				case EVENT_UART_RECEIVED: {
+					LOG_INFO("UART message received event");
+					// Actions pour message UART reçu
+					HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_1); // Toggle LED
+					break;
+				}
+
+				case EVENT_TIMER_EXPIRED: {
+					LOG_INFO("Timer expired event");
+					// Actions pour timer expiré
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
+					osDelay(200);
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+					break;
+				}
+
+				case EVENT_ERROR: {
+					LOG_ERROR("Error event - data: %d", evt.data);
+					// Actions pour erreur
+					for (int i = 0; i < 5; i++) {
+						HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
+						osDelay(50);
+						HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+						osDelay(50);
+					}
+					break;
+				}
+
+				case EVENT_WAKE_UP: {
+					LOG_INFO("Wake up event");
+					// Actions pour réveil
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
+					osDelay(100);
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+					break;
+				}
+
+				case EVENT_SLEEP: {
+					LOG_INFO("Sleep event");
+					// Actions avant sleep
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
+					osDelay(100);
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+					break;
+				}
+
+				case EVENT_SYSTEM_RESET: {
+					LOG_INFO("System reset event");
+					// Actions avant reset
+					for (int i = 0; i < 10; i++) {
+						HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
+						osDelay(50);
+						HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+						osDelay(50);
+					}
+					osDelay(1000);
+					HAL_NVIC_SystemReset();
+					break;
+				}
+
+				default: {
+					LOG_WARNING("Unknown event type: %d", evt.type);
+					break;
+				}
+			}
+        } else {
+            LOG_ERROR("Failed to receive event: %d", status);
+        }
+    }
+
   /* USER CODE END Appli_Tsk */
 }
 
 /* USER CODE BEGIN Header_Uart1_Tsk */
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if(GPIO_Pin == GPIO_PIN_0)
+    {
+        LOG_DEBUG("Button pressed on PA0");
+
+        if(HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_RESET)
+        {
+            // Envoyer événement bouton pressé
+            send_event(EVENT_BUTTON_PRESSED, SOURCE_BUTTON, 1);
+        }
+    }
+}
+
 /**
 * @brief Function implementing the Uart1_Task thread.
 * @param argument: Not used
@@ -519,12 +830,23 @@ void Appli_Tsk(void *argument)
 void Uart1_Tsk(void *argument)
 {
   /* USER CODE BEGIN Uart1_Tsk */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END Uart1_Tsk */
+	uint8_t rx_buffer[64];
+
+	LOG_INFO("UART1 Task started");
+
+	for(;;)
+	{
+		// Lire depuis UART1
+		if (HAL_UART_Receive(&hlpuart1, rx_buffer, sizeof(rx_buffer), 1000) == HAL_OK) {
+			LOG_INFO("UART1 received: %s", rx_buffer);
+
+			// Envoyer événement UART reçu
+			send_event(EVENT_UART_RECEIVED, SOURCE_UART, strlen((char*)rx_buffer));
+		}
+
+		osDelay(100);
+	}
+    /* USER CODE END Uart1_Tsk */
 }
 
 /**
