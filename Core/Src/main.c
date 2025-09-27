@@ -17,10 +17,11 @@
   */
 /* USER CODE END Header */
 /*
- TODO : 2e uart, pile envoi message lora, sequenceur event, mesure mode STOP, reception/traitement message,
- clignot sorties, pwm, eeprom lecture/ecriture, log en flash, antirebond 2 boutons
+ TODO : reception/traitement message, eeprom lecture/ecriture, log en flash, pile envoi message lora,
+ mesure mode STOP, pile envoi uart, watchdog, adresses LORA/Uart
+ clignot sorties, pwm,  antirebond 2 boutons, 2e uart
 
- v1 09/2025 : STM32CubeMX + freertos+subGhz+LPUart1+RTC+print_log
+ v1.1 09/2025 : STM32CubeMX + freertos+ subGhz+ LPUart1+ RTC+ print_log+ event_queue
 
 */
 /* Includes ------------------------------------------------------------------*/
@@ -40,7 +41,8 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
-
+HAL_StatusTypeDef configure_lse_oscillator(void);
+HAL_StatusTypeDef configure_lsi_oscillator(void);
 
 /* USER CODE END PTD */
 
@@ -160,6 +162,24 @@ int main(void)
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
 
+  // configure l'oscillateur
+ /* if (configure_lsi_oscillator() == HAL_OK) {
+        LOG_INFO("LSI configured (no TCXO)");
+  } else {
+         LOG_ERROR("No RTC oscillator available");
+            }*/
+  /* Essayer LSE d'abord (TCXO)
+      if (configure_lse_oscillator() == HAL_OK) {
+          LOG_INFO("TCXO detected and configured");
+      } else {
+          // Fallback sur LSI
+          if (configure_lsi_oscillator() == HAL_OK) {
+              LOG_INFO("LSI configured (no TCXO)");
+          } else {
+              LOG_ERROR("No RTC oscillator available");
+          }
+      }*/
+
   LOG_INFO("=== RAK3172 LoRa System Started ===");
   LOG_INFO("Log level: %d", get_log_level());
   LOG_DEBUG("Debug logging enabled");
@@ -234,6 +254,46 @@ int main(void)
   * @retval None
   */
 void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.MSIState = RCC_MSI_ON;
+  RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
+  RCC_OscInitStruct.LSIDiv = RCC_LSI_DIV1;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure the SYSCLKSource, HCLK, PCLK1 and PCLK2 clocks dividers
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK3|RCC_CLOCKTYPE_HCLK
+                              |RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_PCLK1
+                              |RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.AHBCLK3Divider = RCC_SYSCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+void SystemClock_Config_old(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
@@ -461,6 +521,84 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+ * @brief Configuration de LSE (TCXO externe)
+ * @retval HAL_StatusTypeDef: Statut de la configuration
+ */
+HAL_StatusTypeDef configure_lse_oscillator(void)
+{
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    HAL_StatusTypeDef status;
+
+    LOG_DEBUG("Attempting to configure LSE (TCXO)");
+
+    // Configuration LSE
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE;
+    RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+
+    status = HAL_RCC_OscConfig(&RCC_OscInitStruct);
+
+    if (status == HAL_OK) {
+        // Vérifier que LSE est vraiment actif
+        uint32_t timeout = 1000;
+        while (!__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) && timeout > 0) {
+            osDelay(1);
+            timeout--;
+        }
+
+        if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY)) {
+            LOG_INFO("LSE (TCXO) configured successfully");
+            return HAL_OK;
+        } else {
+            LOG_WARNING("LSE startup timeout");
+            return HAL_TIMEOUT;
+        }
+    } else {
+        LOG_WARNING("LSE configuration failed: %d", status);
+        return status;
+    }
+}
+
+/**
+ * @brief Configuration de LSI (oscillateur interne)
+ * @retval HAL_StatusTypeDef: Statut de la configuration
+ */
+HAL_StatusTypeDef configure_lsi_oscillator(void)
+{
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    HAL_StatusTypeDef status;
+
+    LOG_DEBUG("Attempting to configure LSI (internal oscillator)");
+
+    // Configuration LSI
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+    RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+
+    status = HAL_RCC_OscConfig(&RCC_OscInitStruct);
+
+    if (status == HAL_OK) {
+        // Vérifier que LSI est actif
+        uint32_t timeout = 1000;
+        while (!__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) && timeout > 0) {
+            osDelay(1);
+            timeout--;
+        }
+
+        if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY)) {
+            LOG_INFO("LSI (internal oscillator) configured successfully");
+            return HAL_OK;
+        } else {
+            LOG_WARNING("LSI startup timeout");
+            return HAL_TIMEOUT;
+        }
+    } else {
+        LOG_WARNING("LSI configuration failed: %d", status);
+        return status;
+    }
+}
 
 /**
  * @brief Envoyer un message LoRa
