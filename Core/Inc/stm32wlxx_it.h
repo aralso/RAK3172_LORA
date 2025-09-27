@@ -52,7 +52,7 @@ void MemManage_Handler(void);
 void BusFault_Handler(void);
 void UsageFault_Handler(void);
 void DebugMon_Handler(void);
-void LPUART1_IRQHandler(void);
+void TIM16_IRQHandler(void);
 void SUBGHZ_Radio_IRQHandler(void);
 /* USER CODE BEGIN EFP */
 

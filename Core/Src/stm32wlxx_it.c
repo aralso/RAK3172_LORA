@@ -55,7 +55,6 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
-extern UART_HandleTypeDef hlpuart1;
 extern SUBGHZ_HandleTypeDef hsubghz;
 extern TIM_HandleTypeDef htim16;
 
@@ -162,17 +161,17 @@ void DebugMon_Handler(void)
 /******************************************************************************/
 
 /**
-  * @brief This function handles LPUART1 Interrupt.
+  * @brief This function handles TIM16 Global Interrupt.
   */
-void LPUART1_IRQHandler(void)
+void TIM16_IRQHandler(void)
 {
-  /* USER CODE BEGIN LPUART1_IRQn 0 */
+  /* USER CODE BEGIN TIM16_IRQn 0 */
 
-  /* USER CODE END LPUART1_IRQn 0 */
-  HAL_UART_IRQHandler(&hlpuart1);
-  /* USER CODE BEGIN LPUART1_IRQn 1 */
+  /* USER CODE END TIM16_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim16);
+  /* USER CODE BEGIN TIM16_IRQn 1 */
 
-  /* USER CODE END LPUART1_IRQn 1 */
+  /* USER CODE END TIM16_IRQn 1 */
 }
 
 /**

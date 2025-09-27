@@ -14,7 +14,7 @@ static uint8_t current_log_level = CURRENT_LOG_LEVEL;
 // Buffer pour le formatage
 static char log_buffer[256];
 
-extern UART_HandleTypeDef hlpuart1;
+extern UART_HandleTypeDef huart2;
 
 /**
  * @brief Fonction principale de logging avec niveau de verbosité
@@ -65,7 +65,7 @@ void print_log(uint8_t level, const char* format, ...)
     strcat(log_buffer, "\r\n");
 
     // Envoyer via UART
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)log_buffer, strlen(log_buffer), HAL_MAX_DELAY);
+    HAL_UART_Transmit(&huart2, (uint8_t*)log_buffer, strlen(log_buffer), HAL_MAX_DELAY);
 }
 
 /**

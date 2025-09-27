@@ -15,15 +15,16 @@
   *
   ******************************************************************************
   */
-/* USER CODE END Header */
+
 /*
  TODO : reception/traitement message, eeprom lecture/ecriture, log en flash, pile envoi message lora,
  mesure mode STOP, pile envoi uart, watchdog, adresses LORA/Uart
  clignot sorties, pwm,  antirebond 2 boutons, 2e uart
 
  v1.1 09/2025 : STM32CubeMX + freertos+ subGhz+ LPUart1+ RTC+ print_log+ event_queue
-
 */
+
+/* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
@@ -57,11 +58,11 @@ HAL_StatusTypeDef configure_lsi_oscillator(void);
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-UART_HandleTypeDef hlpuart1;
-
 RTC_HandleTypeDef hrtc;
 
 SUBGHZ_HandleTypeDef hsubghz;
+
+UART_HandleTypeDef huart2;
 
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -110,9 +111,9 @@ const osMessageQueueAttr_t Event_Queue_attributes = {
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_LPUART1_UART_Init(void);
 static void MX_SUBGHZ_Init(void);
 static void MX_RTC_Init(void);
+static void MX_USART2_UART_Init(void);
 void StartDefaultTask(void *argument);
 void LORA_RXTsk(void *argument);
 void LORA_TXTsk(void *argument);
@@ -157,9 +158,9 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_LPUART1_UART_Init();
   MX_SUBGHZ_Init();
   MX_RTC_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
   // configure l'oscillateur
@@ -203,7 +204,7 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of Event_Queue */
-  Event_QueueHandle = osMessageQueueNew (16, sizeof(event_t), &Event_Queue_attributes);
+  Event_QueueHandle = osMessageQueueNew (16, sizeof(uint16_t), &Event_Queue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -291,94 +292,6 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-}
-
-void SystemClock_Config_old(void)
-{
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-
-  /** Configure the main internal regulator output voltage
-  */
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
-
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_MSI;
-  RCC_OscInitStruct.MSIState = RCC_MSI_ON;
-  RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
-  RCC_OscInitStruct.LSIDiv = RCC_LSI_DIV1;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure the SYSCLKSource, HCLK, PCLK1 and PCLK2 clocks dividers
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK3|RCC_CLOCKTYPE_HCLK
-                              |RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_PCLK1
-                              |RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.AHBCLK3Divider = RCC_SYSCLK_DIV1;
-
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-}
-
-/**
-  * @brief LPUART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_LPUART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN LPUART1_Init 0 */
-
-  /* USER CODE END LPUART1_Init 0 */
-
-  /* USER CODE BEGIN LPUART1_Init 1 */
-
-  /* USER CODE END LPUART1_Init 1 */
-  hlpuart1.Instance = LPUART1;
-  hlpuart1.Init.BaudRate = 115200;
-  hlpuart1.Init.WordLength = UART_WORDLENGTH_8B;
-  hlpuart1.Init.StopBits = UART_STOPBITS_1;
-  hlpuart1.Init.Parity = UART_PARITY_NONE;
-  hlpuart1.Init.Mode = UART_MODE_TX_RX;
-  hlpuart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  hlpuart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  hlpuart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
-  hlpuart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  hlpuart1.FifoMode = UART_FIFOMODE_DISABLE;
-  if (HAL_UART_Init(&hlpuart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_SetTxFifoThreshold(&hlpuart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_SetRxFifoThreshold(&hlpuart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_DisableFifoMode(&hlpuart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN LPUART1_Init 2 */
-
-  /* USER CODE END LPUART1_Init 2 */
-
 }
 
 /**
@@ -481,6 +394,54 @@ static void MX_SUBGHZ_Init(void)
   LOG_INFO("SUBGHZ LoRa configured");
 
   /* USER CODE END SUBGHZ_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart2.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart2, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart2, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
 
 }
 
@@ -730,7 +691,7 @@ void LORA_RXTsk(void *argument)
 
 		osDelay(1000);
 	}
-	 /* USER CODE END LORA_RXTsk */
+  /* USER CODE END LORA_RXTsk */
 }
 
 /* USER CODE BEGIN Header_LORA_TXTsk */
@@ -975,7 +936,7 @@ void Uart1_Tsk(void *argument)
 	for(;;)
 	{
 		// Lire depuis UART1
-		if (HAL_UART_Receive(&hlpuart1, rx_buffer, sizeof(rx_buffer), 1000) == HAL_OK) {
+		if (HAL_UART_Receive(&huart2, rx_buffer, sizeof(rx_buffer), 1000) == HAL_OK) {
 			LOG_INFO("UART1 received: %s", rx_buffer);
 
 			// Envoyer événement UART reçu
@@ -984,7 +945,7 @@ void Uart1_Tsk(void *argument)
 
 		osDelay(100);
 	}
-    /* USER CODE END Uart1_Tsk */
+  /* USER CODE END Uart1_Tsk */
 }
 
 /**
