@@ -13,6 +13,10 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+#define END_NODE
+#define EMETTEUR 'U'
+
+
 // Structure pour les événements
 typedef struct {
     uint8_t type;           // Type d'événement
@@ -20,17 +24,19 @@ typedef struct {
     uint16_t data;          // Données de l'événement
 } event_t;
 
-// Types d'événements
-#define EVENT_INIT              0x01
-#define EVENT_BUTTON_PRESSED    0x02
-#define EVENT_LORA_RECEIVED    0x03
-#define EVENT_LORA_SENT        0x04
-#define EVENT_UART_RECEIVED    0x05
-#define EVENT_TIMER_EXPIRED     0x06
-#define EVENT_ERROR             0x07
-#define EVENT_WAKE_UP           0x08
-#define EVENT_SLEEP             0x09
-#define EVENT_SYSTEM_RESET     0x0A
+
+typedef enum  {
+    EVENT_BUTTON = 0,
+    EVENT_LORA_RX,
+    EVENT_LORA_TX,
+    EVENT_UART_RX,
+    EVENT_ERROR,
+    EVENT_WAKE_UP,
+    EVENT_SLEEP,
+    EVENT_SYSTEM_RESET,
+    EVENT_TIMER_24h,
+    EVENT_TIMER_20min
+} EventId_t;
 
 // Sources d'événements
 #define SOURCE_BUTTON           0x01
@@ -46,8 +52,33 @@ typedef struct {
 #define LOG_LEVEL_DEBUG    4
 #define LOG_LEVEL_VERBOSE  5
 
+#define TIMER_PERIOD_MS  20000   // 50s
+
 // Niveau de verbosité global (modifiable)
 #define CURRENT_LOG_LEVEL  LOG_LEVEL_DEBUG
+
+extern uint8_t code_erreur, comptage_erreur;
+extern uint8_t err_donnee1, err_donnee2;
+
+
+// Code erreur
+
+     // Erreurs 0 a 1F : envoye une seule fois (appli >0x10)
+     // Erreurs 20 a 7F : 4 fois        (Appli >0x70)
+     // Erreurs 80 a FF : tout le temps (Appli > 0xD0)
+
+#define code_erreur_envoi 0x20
+#define code_erreur_dequeue 0x21
+
+#define erreur_analog               0x42  // 40 et 41:periph
+#define erreur_demar                0x43
+#define erreur_util_rtos            0x43
+#define erreur_tab                  0x44
+
+
+
+#define dest_erreur	'P'
+#define dest_log 'P'
 
 // Fonction principale de logging
 void print_log(uint8_t level, const char* format, ...);
@@ -64,6 +95,10 @@ void set_log_level(uint8_t level);
 
 // Fonction pour obtenir le niveau actuel
 uint8_t get_log_level(void);
-
+void init_functions(void);
+uint8_t envoie_mess_ASC(const char* format, ...);
+uint8_t envoie_mess_bin(const uint8_t *buf);
+uint8_t deci (uint8_t val);
+void envoi_code_erreur(void);
 
 #endif /* INC_FUNCTIONS_H_ */
