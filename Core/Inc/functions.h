@@ -45,6 +45,9 @@ typedef enum  {
 #define SOURCE_TIMER            0x04
 #define SOURCE_SYSTEM           0x05
 
+#define MESS_BUFFER_SIZE 500
+#define MESS_LG_MAX	100
+
 // Niveaux de verbosité
 #define LOG_LEVEL_ERROR    1
 #define LOG_LEVEL_WARNING  2
@@ -52,7 +55,7 @@ typedef enum  {
 #define LOG_LEVEL_DEBUG    4
 #define LOG_LEVEL_VERBOSE  5
 
-#define TIMER_PERIOD_MS  20000   // 50s
+#define TIMER_PERIOD_MS  7000   // 50s
 
 // Niveau de verbosité global (modifiable)
 #define CURRENT_LOG_LEVEL  LOG_LEVEL_DEBUG
@@ -77,8 +80,8 @@ extern uint8_t err_donnee1, err_donnee2;
 
 
 
-#define dest_erreur	'P'
-#define dest_log 'P'
+#define dest_erreur	'1'
+#define dest_log '1'
 
 // Fonction principale de logging
 void print_log(uint8_t level, const char* format, ...);

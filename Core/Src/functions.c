@@ -37,8 +37,6 @@ const osThreadAttr_t Uart_TX_Task_attributes = {
   .stack_size = 128 * 4
 };
 
-#define MESS_BUFFER_SIZE 500
-#define MESS_LG_MAX	100
 
 static uint8_t mess_buffer[MESS_BUFFER_SIZE];
 static uint16_t head = 0;

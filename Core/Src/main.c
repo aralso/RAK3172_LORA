@@ -21,7 +21,7 @@
  mesure mode STOP, watchdog, adresses LORA/Uart
  clignot sorties, pwm,  antirebond 2 boutons, 2e uart
 
- v1.2 09/2025 : pile envoi uart, timer
+ v1.2 09/2025 : pile envoi uart, timer, code_erreur
  v1.1 09/2025 : STM32CubeMX + freertos+ subGhz+ Uart2+ RTC+ print_log+ event_queue
 */
 
@@ -102,7 +102,7 @@ osThreadId_t Uart1_TaskHandle;
 const osThreadAttr_t Uart1_Task_attributes = {
   .name = "Uart1_Task",
   .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 128 * 4
+  .stack_size = 256 * 4
 };
 /* Definitions for Event_Queue */
 osMessageQueueId_t Event_QueueHandle;
@@ -967,31 +967,54 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void Uart1_Tsk(void *argument)
 {
   /* USER CODE BEGIN Uart1_Tsk */
-	uint8_t rx_buffer[64];
+	uint8_t rx_buffer[MESS_LG_MAX];
+	uint8_t rx_char;
+    uint16_t buffer_index = 0;
+    HAL_StatusTypeDef status;
 
     osDelay(100);
 	//LOG_INFO("UART1 RX Task started");
 	osDelay(100);
 
+	 memset(rx_buffer, 0, sizeof(rx_buffer));
+
 	for(;;)
 	{
 		// Lire depuis UART1
-		HAL_StatusTypeDef status = HAL_UART_Receive(&huart2, rx_buffer, sizeof(rx_buffer), 1000);
+		status = HAL_UART_Receive(&huart2, &rx_char, 1, 1000);
 
-		if (status == HAL_OK) {
-		    // Au moins 1 caractère reçu
-		    uint16_t received_length = strlen((char*)rx_buffer);
-		    LOG_INFO("Received %d characters: %s", received_length, rx_buffer);
-			// Envoyer événement UART reçu
-			send_event(EVENT_UART_RX, SOURCE_UART, strlen((char*)rx_buffer));
+		if (status == HAL_OK)
+		{
+		      LOG_INFO("Received: 0x%02X ('%c')", rx_char,
+		                     (rx_char >= 32 && rx_char <= 126) ? rx_char : '.');
+
+		            // Stocker dans le buffer
+		            if (buffer_index < sizeof(rx_buffer) - 1) {
+		                rx_buffer[buffer_index++] = rx_char;
+		            }
+
+		            // Traiter si fin de ligne ou buffer plein
+		            if (rx_char == '\n' || rx_char == '\r' || buffer_index >= sizeof(rx_buffer) - 1) {
+		                rx_buffer[buffer_index] = '\0';
+		                LOG_INFO("Complete message: %s", rx_buffer);
+
+		                // Envoyer événement
+		                event_t evt = {EVENT_UART_RX, SOURCE_UART, buffer_index, HAL_GetTick()};
+		                //osMessageQueuePut(Event_QueueHandle, &evt, 0, 0);
+
+		                // Réinitialiser le buffer
+		                buffer_index = 0;
+		                memset(rx_buffer, 0, sizeof(rx_buffer));
+		            }
 		} else if (status == HAL_TIMEOUT) {
 		    //LOG_WARNING("UART timeout - no data received");
 		} else {
 		    LOG_ERROR("UART receive error: %d", status);
+		    osDelay(100);
 		}
 
-		osDelay(8500);
-		//LOG_INFO("UART1 RX  Task ....");
+		osDelay(100);
+		//LOG_INFO(".");
 	}
   /* USER CODE END Uart1_Tsk */
 }
