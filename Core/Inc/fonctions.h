@@ -1,22 +1,21 @@
 /*
- * functions.h
+ * fonctions.h
  *
- *  Created on: Sep 26, 2025
+ *  Created on: Oct 1, 2025
  *      Author: Tocqueville
  */
 
-#ifndef INC_FUNCTIONS_H_
-#define INC_FUNCTIONS_H_
-
+#ifndef INC_FONCTIONS_H_
+#define INC_FONCTIONS_H_
 
 #include "main.h"
 #include <stdio.h>
 #include <stdarg.h>
 
 #define END_NODE
-#define EMETTEUR 'U'
+#define My_Address 'U'
 
-//#define WATCHDOG
+#define WATCHDOG
 
 // Structure pour les événements
 typedef struct {
@@ -45,65 +44,6 @@ typedef enum  {
 #define SOURCE_UART             0x03
 #define SOURCE_TIMER            0x04
 #define SOURCE_SYSTEM           0x05
-
-#define MESS_BUFFER_SIZE 500
-#define MESS_LG_MAX	100
-
-// Niveaux de verbosité
-#define LOG_LEVEL_ERROR    1
-#define LOG_LEVEL_WARNING  2
-#define LOG_LEVEL_INFO     3
-#define LOG_LEVEL_DEBUG    4
-#define LOG_LEVEL_VERBOSE  5
-
-#define TIMER_PERIOD_MS  7000   // 50s
-
-// Niveau de verbosité global (modifiable)
-#define CURRENT_LOG_LEVEL  LOG_LEVEL_DEBUG
-
-extern uint8_t code_erreur, comptage_erreur;
-extern uint8_t err_donnee1, err_donnee2;
-
-
-// Code erreur
-
-     // Erreurs 0 a 1F : envoye une seule fois (appli >0x10)
-     // Erreurs 20 a 7F : 4 fois        (Appli >0x70)
-     // Erreurs 80 a FF : tout le temps (Appli > 0xD0)
-
-#define code_erreur_envoi 0x20
-#define code_erreur_dequeue 0x21
-
-#define erreur_analog               0x42  // 40 et 41:periph
-#define erreur_demar                0x43
-#define erreur_util_rtos            0x43
-#define erreur_tab                  0x44
-
-
-
-#define dest_erreur	'1'
-#define dest_log '1'
-
-// Fonction principale de logging
-void print_log(uint8_t level, const char* format, ...);
-
-// Macros pour faciliter l'utilisation
-#define LOG_ERROR(...)   print_log(LOG_LEVEL_ERROR,   __VA_ARGS__)
-#define LOG_WARNING(...) print_log(LOG_LEVEL_WARNING, __VA_ARGS__)
-#define LOG_INFO(...)    print_log(LOG_LEVEL_INFO,    __VA_ARGS__)
-#define LOG_DEBUG(...)   print_log(LOG_LEVEL_DEBUG,   __VA_ARGS__)
-#define LOG_VERBOSE(...) print_log(LOG_LEVEL_VERBOSE, __VA_ARGS__)
-
-// Fonction pour changer le niveau de verbosité à l'exécution
-void set_log_level(uint8_t level);
-
-// Fonction pour obtenir le niveau actuel
-uint8_t get_log_level(void);
-void init_functions(void);
-uint8_t envoie_mess_ASC(const char* format, ...);
-uint8_t envoie_mess_bin(const uint8_t *buf);
-uint8_t deci (uint8_t val);
-void envoi_code_erreur(void);
 
 // === SYSTÈME DE WATCHDOG ===
 // Identifiants des tâches pour le watchdog
@@ -146,5 +86,7 @@ void display_reset_cause(void);
 const char* get_reset_cause_string(uint32_t reset_flags);
 void save_diagnostic_data(void);
 void load_diagnostic_data(void);
+void check_stack_usage(void);
 
-#endif /* INC_FUNCTIONS_H_ */
+
+#endif /* INC_FONCTIONS_H_ */

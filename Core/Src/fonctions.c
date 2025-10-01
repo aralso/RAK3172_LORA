@@ -1,48 +1,21 @@
 /*
- * functions.c
+ * fonctions.c
  *
- *  Created on: Sep 26, 2025
+ *  Created on: Oct 1, 2025
  *      Author: Tocqueville
  */
 
+#include <communication.h>
+#include <fonctions.h>
 #include "cmsis_os.h"
 #include "timers.h"
-#include "functions.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
 
-// Variable globale pour le niveau de verbosité
-static uint8_t current_log_level = CURRENT_LOG_LEVEL;
-
-// Buffer pour le formatage
-static char log_buffer[256];
-
-extern UART_HandleTypeDef huart2;
-extern osMessageQueueId_t Event_QueueHandle;
-extern osThreadId_t Appli_TaskHandle;
-extern osThreadId_t LORA_TX_TaskHandle;
-extern osThreadId_t LORA_RX_TaskHandle;
-extern osThreadId_t Uart1_TaskHandle;
-
-// Timers
-TimerHandle_t HTimer_24h;
-TimerHandle_t HTimer_20min;
-
-/* Definitions for Uart_TX_Task */
-osThreadId_t Uart_TX_TaskHandle;
-const osThreadAttr_t Uart_TX_Task_attributes = {
-  .name = "Uart_TXTask",
-  .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 256 * 4
-};
-
-
-static uint8_t mess_buffer[MESS_BUFFER_SIZE];
-static uint16_t head = 0;
-static uint16_t tail = 0;
-
-static osMutexId_t bufferMutex;
+// === SYSTÈME DE WATCHDOG ===
+// Tableau de suivi des tâches
+static watchdog_task_info_t watchdog_tasks[WATCHDOG_TASK_COUNT];
 
 #define nb_erreurs_enregistrees  20
 #define nb_erreurs_envoyees      30
@@ -57,18 +30,20 @@ uint8_t erreurs_4_fois[nb_erreurs_4_fois/4];       // Nb d'erreurs dÃ©ja envoy
 
 uint8_t nb_reset=0;
 
-uint8_t mess_enqueue(const uint8_t *data, uint8_t len);
-uint8_t mess_dequeue(uint8_t *data, uint8_t *len);
 
-// === SYSTÈME DE WATCHDOG ===
-// Tableau de suivi des tâches
-static watchdog_task_info_t watchdog_tasks[WATCHDOG_TASK_COUNT];
+extern UART_HandleTypeDef huart2;
+extern osMessageQueueId_t Event_QueueHandle;
+extern osThreadId_t Appli_TaskHandle;
+extern osThreadId_t LORA_TX_TaskHandle;
+extern osThreadId_t LORA_RX_TaskHandle;
+extern osThreadId_t Uart_RX_TaskHandle;
 
-// Timer pour la vérification périodique du watchdog
-TimerHandle_t HTimer_Watchdog;
+// Timers
+TimerHandle_t HTimer_24h;
+TimerHandle_t HTimer_20min;
+TimerHandle_t HTimer_Watchdog;  // Timer pour la vérification périodique du watchdog
+
 static void WatchdogTimerCallback(TimerHandle_t xTimer);
-
-void Uart_TXTsk(void *argument);
 static void Timer24hCallback(TimerHandle_t xTimer);
 static void Timer20minCallback(TimerHandle_t xTimer);
 
@@ -76,18 +51,7 @@ void init_functions(void)
 {
 	// Afficher la cause du reset au démarrage
 	display_reset_cause();
-	
-	// Initialisation du mutex
-	bufferMutex = osMutexNew(NULL);
-	if (bufferMutex == NULL) {
-		LOG_ERROR("Failed to create bufferMutex");
-		return;
-	}
-	LOG_INFO("bufferMutex created: %p", bufferMutex);
 
-	/* creation of Uart_TX_Task */
-
-	Uart_TX_TaskHandle = osThreadNew(Uart_TXTsk, NULL, &Uart_TX_Task_attributes);
 
 	// creation timers
 	 HTimer_24h = xTimerCreate(
@@ -112,305 +76,6 @@ void init_functions(void)
 	watchdog_init();
 }
 
-
-
-
-// PRS0 -> PURS0 (lg=5)
-uint8_t envoie_mess_ASC(const char* format, ...)
-{
-	uint16_t len;
-	uint8_t mess[MESS_LG_MAX]; // Variable locale pour travailler
-	char formatted_buffer[MESS_LG_MAX]; // Buffer pour le formatage
-
-	if (format == NULL) {
-		return 1; // Erreur : buffer nul
-	}
-
-	// Formatage des arguments variables
-	va_list args;
-	va_start(args, format);
-	len = vsnprintf(formatted_buffer, sizeof(formatted_buffer) - 1, format, args);
-	va_end(args);
-
-	// Vérifier si le formatage a réussi
-	if (len < 0) {
-		return 3; // Erreur : formatage échoué
-	}
-
-
-	// Vérifier si len<3 ou la longueur dépasse la taille maximale
-	if ((len < 3) || ( (len+3) >= MESS_LG_MAX)) {
-		return 2; // Erreur : dépassement de buffer
-	}
-
-	// Copier buf dans mess
-	memcpy(mess+1, formatted_buffer, len + 1); // decalage & +1 pour inclure le '\0'
-	len += 2;
-	mess[0] = formatted_buffer[0];
-	mess[1] = EMETTEUR;
-
-
-	// Envoyer le message
-	uint8_t res = mess_enqueue(mess, len);
-	//osDelay(100);
-	//LOG_INFO("enqueue:%i %s", len, mess);
-    //osDelay(100);
-	return res;
-}
-
-// P2RS => PU2RS (lg=5)
-uint8_t envoie_mess_bin(const uint8_t *buf)
-{
-	uint8_t len;
-	uint8_t mess[MESS_LG_MAX]; // Variable locale pour travailler
-
-	if (buf == NULL) {
-		return 1; // Erreur : buffer nul
-	}
-	len = buf[1]+2;
-
-	// Vérifier si len<4 ou la longueur dépasse la taille maximale
-	if ((len < 4) || ( (len+2) >= MESS_LG_MAX)) {
-		return 2; // Erreur : dépassement de buffer
-	}
-
-	// Copier buf dans mess
-	memcpy(mess+1, buf, len); // decalage de 2
-	len++; // pour emetteur  : 5
-	mess[0] = buf[0] & 0x80;
-	mess[1] = EMETTEUR;
-
-	// Envoyer le message
-	uint8_t res = mess_enqueue(mess, len);
-	return res;
-
-}
-
-// Ajout d’un message
-uint8_t mess_enqueue(const uint8_t *data, uint8_t len)
-{
-	osStatus_t status = osMutexAcquire(bufferMutex, 10000);
-	if (status != osOK) return 3;
-
-    uint16_t free_space;
-    uint16_t head_prov = head;
-
-    if (head >= tail)
-        free_space = MESS_BUFFER_SIZE - (head - tail) - 1;
-    else
-        free_space = (tail - head) - 1;
-
-    if (free_space < (len + 1)) {
-        osMutexRelease(bufferMutex);
-        return 1; // pas assez de place
-    }
-
-    if ((len < 5) || (len > MESS_LG_MAX))
-    {
-    	return 2;
-    }
-    if (head >= MESS_BUFFER_SIZE) {
-            head = 0; // Reset si corruption
-            tail = 0;
-    }
-
-    mess_buffer[head_prov] = len;
-    head_prov = (head_prov + 1) % MESS_BUFFER_SIZE;
-
-    for (uint8_t i = 0; i < len; i++) {
-        mess_buffer[head_prov] = data[i];
-        head_prov = (head_prov + 1) % MESS_BUFFER_SIZE;
-    }
-
-    head = head_prov;
-
-	//osDelay(100);
-	//LOG_INFO("enqueue:head:%d tail:%d", head, tail);
-    //osDelay(100);
-    osMutexRelease(bufferMutex);
-
-    return 0;
-}
-
-// Extraction d’un message
-uint8_t mess_dequeue(uint8_t *data, uint8_t *len)
-{
-	osStatus_t status = osMutexAcquire(bufferMutex, 10000);
-	if (status != osOK) return 4;
-
-	uint16_t tail_prov=tail;
-
-    if (head == tail) {
-        osMutexRelease(bufferMutex);
-        return 1; // FIFO vide
-    }
-
-    if (data == NULL || len == NULL)
-    {
-        osMutexRelease(bufferMutex);
-    	return 4;
-    }
-
-    *len = mess_buffer[tail];
-    tail_prov = (tail_prov + 1) % MESS_BUFFER_SIZE;
-
-	//osDelay(300);
-	//LOG_INFO("dequeue1:head:%d tail:%d", head, tail);
-    //osDelay(300);
-
-    // Vérif longueur valide
-	if ((*len < 5) || (*len > MESS_LG_MAX) || tail_prov >= MESS_BUFFER_SIZE)
-	{
-		head=0;
-		tail=0;
-		osMutexRelease(bufferMutex);
-		return 2; // corruption détectée
-	}
-
-	// Vérif que les données tiennent dans la FIFO actuelle
-	uint16_t available = (head >= tail_prov) ?
-						 (head - tail_prov) :
-						 (MESS_BUFFER_SIZE - (tail_prov - head));
-
-	if (available < *len) {
-		head=0;
-		tail=0;
-		osMutexRelease(bufferMutex);
-		return 3; // corruption : message incomplet
-	}
-
-    for (uint8_t i = 0; i < *len; i++) {
-        data[i] = mess_buffer[tail_prov];
-        tail_prov = (tail_prov + 1) % MESS_BUFFER_SIZE;
-    }
-    tail = tail_prov;
-	//osDelay(300);
-	//LOG_INFO("dequeue2:head:%d tail:%d lg:%d", head, tail, *len);
-    //osDelay(300);
-
-    osMutexRelease(bufferMutex);
-    return 0;
-}
-
-void Uart_TXTsk(void *argument)
-{
-    uint8_t msg[MESS_LG_MAX];
-    uint8_t len;
-
-    // Démarrer la surveillance watchdog pour cette tâche
-    watchdog_task_start(WATCHDOG_TASK_UART_TX);
-    LOG_INFO("Uart_TX_Task started with watchdog protection");
-
-    for (;;)
-    {
-        // Enregistrer un heartbeat pour le watchdog
-        watchdog_task_heartbeat(WATCHDOG_TASK_UART_TX);
-        
-        uint8_t stat;
-        stat = mess_dequeue(msg, &len);
-        if (stat == 0)
-        {
-        	//LOG_INFO("U");
-            //osDelay(300);
-            //LOG_INFO("UART TX message dequeue lg:%d st:%s", len, msg);
-            //osDelay(300);
-            // Envoi bloquant : la tâche attend
-            HAL_StatusTypeDef status = HAL_UART_Transmit(&huart2, msg, len, 10000);
-            if (status) { code_erreur = code_erreur_envoi;err_donnee1=status; err_donnee2=len;}
-            //osDelay(300);
-            //LOG_INFO("UART TX failed: %d", status);
-            //osDelay(300);
-        }
-        else
-        {
-        	if (stat!=1)
-        	{
-        		code_erreur = code_erreur_dequeue;
-        		err_donnee1 = stat;
-        		err_donnee2 = len;
-        	}
-        }
-        //osDelay(1000); // rien à envoyer → on laisse tourner le CPU
-        //LOG_INFO(".");
-        osDelay(30); // rien à envoyer → on laisse tourner le CPU
-    }
-}
-
-
-/**
- * @brief Fonction principale de logging avec niveau de verbosité
- * @param level: Niveau de verbosité (1-10)
- * @param format: Format string (comme printf)
- * @param ...: Arguments variables
- */
-void print_log(uint8_t level, const char* format, ...)
-{
-    // Vérifier si le niveau est suffisant pour afficher
-    if (level > current_log_level) {
-        return;
-    }
-
-    // Préfixe selon le niveau
-    const char* prefix;
-    switch (level) {
-        case LOG_LEVEL_ERROR:
-            prefix = "[ERROR] ";
-            break;
-        case LOG_LEVEL_WARNING:
-            prefix = "[WARN]  ";
-            break;
-        case LOG_LEVEL_INFO:
-            prefix = "[INFO]  ";
-            break;
-        case LOG_LEVEL_DEBUG:
-            prefix = "[DEBUG] ";
-            break;
-        case LOG_LEVEL_VERBOSE:
-            prefix = "[VERB]  ";
-            break;
-        default:
-            prefix = "[LOG]   ";
-            break;
-    }
-
-    // Ajouter le préfixe
-    log_buffer[0] = dest_log;
-    strcpy(log_buffer+1, prefix);
-
-    // Formatage des arguments
-    va_list args;
-    va_start(args, format);
-    vsnprintf(log_buffer + strlen(prefix), sizeof(log_buffer) - strlen(prefix) - 1, format, args);
-    va_end(args);
-
-    // Ajouter un retour à la ligne
-    strcat(log_buffer, "\r\n");
-
-    // Envoyer via UART
-    //HAL_UART_Transmit(&huart2, (uint8_t*)log_buffer, strlen(log_buffer), 3000);
-    envoie_mess_ASC("%s", log_buffer);
-}
-
-/**
- * @brief Changer le niveau de verbosité à l'exécution
- * @param level: Nouveau niveau (1-10)
- */
-void set_log_level(uint8_t level)
-{
-    if (level >= 1 && level <= 10) {
-        current_log_level = level;
-        LOG_INFO("Log level changed to %d", level);
-    }
-}
-
-/**
- * @brief Obtenir le niveau de verbosité actuel
- * @retval Niveau actuel (1-10)
- */
-uint8_t get_log_level(void)
-{
-    return current_log_level;
-}
 
 static void Timer24hCallback(TimerHandle_t xTimer)
 {
@@ -472,10 +137,10 @@ void check_stack_usage(void)
     LOG_INFO("Uart_TX_Task: %lu bytes free", stack_high_water_mark);
 
     // Uart1_Task
-    stack_high_water_mark = uxTaskGetStackHighWaterMark(Uart1_TaskHandle);
-    LOG_INFO("Uart1_Task: %lu bytes free", stack_high_water_mark);
+    stack_high_water_mark = uxTaskGetStackHighWaterMark(Uart_RX_TaskHandle);
+    LOG_INFO("Uart_RX_Task: %lu bytes free", stack_high_water_mark);
 
-    LOG_INFO("=== END STACK REPORT ===");
+    //LOG_INFO("=== END STACK REPORT ===");
 }
 
 
@@ -571,7 +236,7 @@ uint8_t deci (uint8_t val) //transforme un char hexa en son charactere ASCII   0
 void watchdog_init(void)
 {
     LOG_INFO("Initializing watchdog system...");
-    
+
     // Initialiser toutes les tâches comme inactives
     for (int i = 0; i < WATCHDOG_TASK_COUNT; i++) {
         watchdog_tasks[i].last_heartbeat = 0;
@@ -579,7 +244,7 @@ void watchdog_init(void)
         watchdog_tasks[i].is_active = 0;
         watchdog_tasks[i].error_count = 0;
     }
-    
+
     // Créer le timer de vérification du watchdog
     HTimer_Watchdog = xTimerCreate(
         "WatchdogTimer",                    // Nom
@@ -588,7 +253,7 @@ void watchdog_init(void)
         (void*)0,                          // ID
         WatchdogTimerCallback              // Callback
     );
-    
+
 	#ifdef WATCHDOG
 		if (HTimer_Watchdog != NULL) {
 			xTimerStart(HTimer_Watchdog, 0);
@@ -650,10 +315,10 @@ uint8_t watchdog_is_task_alive(watchdog_task_id_t task_id)
     if (task_id >= WATCHDOG_TASK_COUNT || !watchdog_tasks[task_id].is_active) {
         return 1; // Tâche non surveillée ou inactive = considérée comme vivante
     }
-    
+
     uint32_t current_time = xTaskGetTickCount();
     uint32_t elapsed_ms = (current_time - watchdog_tasks[task_id].last_heartbeat) * 1000 / configTICK_RATE_HZ;
-    
+
     return (elapsed_ms < watchdog_tasks[task_id].timeout_ms);
 }
 
@@ -664,26 +329,26 @@ void watchdog_check_all_tasks(void)
 {
     uint32_t current_time = xTaskGetTickCount();
     uint8_t critical_errors = 0;
-    
+
     for (int i = 0; i < WATCHDOG_TASK_COUNT; i++) {
         if (!watchdog_tasks[i].is_active) {
             continue; // Tâche non surveillée
         }
-        
+
         uint32_t elapsed_ms = (current_time - watchdog_tasks[i].last_heartbeat) * 1000 / configTICK_RATE_HZ;
-        
+
         if (elapsed_ms >= watchdog_tasks[i].timeout_ms) {
             watchdog_tasks[i].error_count++;
-            LOG_ERROR("Task %d timeout! Elapsed: %lu ms, Error count: %d", 
+            LOG_ERROR("Task %d timeout! Elapsed: %lu ms, Error count: %d",
                      i, elapsed_ms, watchdog_tasks[i].error_count);
-            
+
             if (watchdog_tasks[i].error_count >= WATCHDOG_ERROR_THRESHOLD) {
                 LOG_ERROR("Task %d exceeded error threshold, system will reset!", i);
                 critical_errors++;
             }
         }
     }
-    
+
     // Si trop d'erreurs critiques, redémarrer le système
     if (critical_errors > 0) {
         watchdog_reset_system();
@@ -696,19 +361,19 @@ void watchdog_check_all_tasks(void)
 void watchdog_print_status(void)
 {
     LOG_INFO("=== WATCHDOG STATUS ===");
-    
+
     for (int i = 0; i < WATCHDOG_TASK_COUNT; i++) {
         if (watchdog_tasks[i].is_active) {
             uint32_t current_time = xTaskGetTickCount();
             uint32_t elapsed_ms = (current_time - watchdog_tasks[i].last_heartbeat) * 1000 / configTICK_RATE_HZ;
-            
-            LOG_INFO("Task %d: Active, Last heartbeat: %lu ms ago, Errors: %d", 
+
+            LOG_INFO("Task %d: Active, Last heartbeat: %lu ms ago, Errors: %d",
                     i, elapsed_ms, watchdog_tasks[i].error_count);
         } else {
             LOG_INFO("Task %d: Inactive", i);
         }
     }
-    
+
     LOG_INFO("=== END WATCHDOG STATUS ===");
 }
 
@@ -718,13 +383,13 @@ void watchdog_print_status(void)
 void watchdog_reset_system(void)
 {
     LOG_ERROR("WATCHDOG: Critical system failure detected, initiating reset...");
-    
+
     // Envoyer un message d'erreur avant le reset
     envoie_mess_ASC("WATCHDOG: System reset due to task failures");
-    
+
     // Attendre un peu pour que le message soit envoyé
     osDelay(1000);
-    
+
     // Forcer un reset système
     NVIC_SystemReset();
 }
@@ -737,16 +402,16 @@ void watchdog_reset_system(void)
 void watchdog_test_task_block(watchdog_task_id_t task_id, uint32_t duration_ms)
 {
     LOG_WARNING("WATCHDOG TEST: Blocking task %d for %lu ms", task_id, duration_ms);
-    
+
     // Arrêter temporairement la surveillance de cette tâche
     watchdog_task_stop(task_id);
-    
+
     // Simuler un blocage
     osDelay(duration_ms);
-    
+
     // Redémarrer la surveillance
     watchdog_task_start(task_id);
-    
+
     LOG_INFO("WATCHDOG TEST: Task %d unblocked", task_id);
 }
 
@@ -759,13 +424,13 @@ void display_reset_cause(void)
 {
     // Charger les données de diagnostic de la session précédente
     load_diagnostic_data();
-    
+
     // Lire les flags de reset depuis RCC
     uint32_t reset_flags = RCC->CSR;
-    
+
     LOG_INFO("=== SYSTEM RESET DIAGNOSTIC ===");
     LOG_INFO("Reset flags: 0x%08lX", reset_flags);
-    
+
     // Analyser chaque cause de reset
     if (reset_flags & RCC_CSR_LPWRRSTF) {
         LOG_INFO("Reset cause: Low Power (LPWR)");
@@ -788,25 +453,25 @@ void display_reset_cause(void)
     if (reset_flags & RCC_CSR_OBLRSTF) {
         LOG_INFO("Reset cause: Option Byte Loader Reset");
     }
-    
+
     // Si aucun flag n'est défini, c'est un reset inconnu
-    if (!(reset_flags & (RCC_CSR_LPWRRSTF | RCC_CSR_WWDGRSTF | RCC_CSR_IWDGRSTF | 
+    if (!(reset_flags & (RCC_CSR_LPWRRSTF | RCC_CSR_WWDGRSTF | RCC_CSR_IWDGRSTF |
                          RCC_CSR_SFTRSTF | RCC_CSR_BORRSTF | RCC_CSR_PINRSTF |
                          RCC_CSR_OBLRSTF ))) {
         LOG_WARNING("Reset cause: Unknown or multiple causes");
     }
-    
+
     // Afficher le nombre de resets
     static uint32_t reset_count = 0;
     reset_count++;
     LOG_INFO("Reset count since last power-on: %lu", reset_count);
-    
+
     // Afficher le temps d'uptime si disponible
     uint32_t uptime_ms = HAL_GetTick();
     LOG_INFO("System uptime: %lu ms", uptime_ms);
-    
+
     LOG_INFO("=== END RESET DIAGNOSTIC ===");
-    
+
     // Effacer les flags de reset pour le prochain démarrage
     __HAL_RCC_CLEAR_RESET_FLAGS();
 }
@@ -839,7 +504,7 @@ const char* get_reset_cause_string(uint32_t reset_flags)
     if (reset_flags & RCC_CSR_OBLRSTF) {
         return "Option Byte Loader Reset";
     }
-    
+
     return "Unknown Reset Cause";
 }
 
@@ -865,12 +530,12 @@ void save_diagnostic_data(void)
 {
     static uint32_t reset_count = 0;
     static uint32_t watchdog_errors = 0;
-    
+
     diagnostic_data_t *diag = (diagnostic_data_t*)DIAGNOSTIC_DATA_ADDR;
-    
+
     // Incrémenter le compteur de resets
     reset_count++;
-    
+
     // Sauvegarder les données
     diag->magic_number = DIAGNOSTIC_MAGIC_NUMBER;
     diag->reset_count = reset_count;
@@ -878,8 +543,8 @@ void save_diagnostic_data(void)
     diag->last_reset_cause = RCC->CSR;
     diag->watchdog_errors = watchdog_errors;
     diag->timestamp = HAL_GetTick();
-    
-    LOG_DEBUG("Diagnostic data saved: reset_count=%lu, uptime=%lu ms", 
+
+    LOG_DEBUG("Diagnostic data saved: reset_count=%lu, uptime=%lu ms",
               reset_count, diag->last_uptime_ms);
 }
 
@@ -889,7 +554,7 @@ void save_diagnostic_data(void)
 void load_diagnostic_data(void)
 {
     diagnostic_data_t *diag = (diagnostic_data_t*)DIAGNOSTIC_DATA_ADDR;
-    
+
     // Vérifier si les données sont valides
     if (diag->magic_number == DIAGNOSTIC_MAGIC_NUMBER) {
         LOG_INFO("=== PREVIOUS SESSION DIAGNOSTIC ===");
@@ -907,31 +572,46 @@ void load_diagnostic_data(void)
 void assert_failed(const char *file, int line)
 {
     char msg[100];
-    int len = snprintf(msg, sizeof(msg), "ASSERT failed at %s:%d\r\n", file, line);
+    int len = snprintf(msg, sizeof(msg), "-- ASSERT failed at %s:%d\r\n", file, line);
+    msg[0] = dest_log;
+    msg[1] = My_Address;
     HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, HAL_MAX_DELAY);
 
+    HAL_Delay(2000);
+
+    // Reset du système
+    NVIC_SystemReset();
     // Bloquer ici
-    taskDISABLE_INTERRUPTS();
-    for(;;);
+    //taskDISABLE_INTERRUPTS();
+    //for(;;);
 }
 
 // Hook appelé si une tâche dépasse sa pile
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
     char msg[100];
-    int len = snprintf(msg, sizeof(msg), "Stack overflow in task: %s\r\n", pcTaskName);
+    int len = snprintf(msg, sizeof(msg), "-- Stack overflow in task: %s\r\n", pcTaskName);
+    msg[0] = dest_log;
+    msg[1] = My_Address;
     HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, HAL_MAX_DELAY);
 
-    taskDISABLE_INTERRUPTS();
-    for(;;);
+    HAL_Delay(2000);
+    NVIC_SystemReset();
+    //taskDISABLE_INTERRUPTS();
+    //for(;;);
 }
 
 // Hook appelé si malloc échoue
 void vApplicationMallocFailedHook(void)
 {
-    char msg[] = "Malloc failed!\r\n";
+    char msg[] = "-- Malloc failed!\r\n";
+    msg[0] = dest_log;
+    msg[1] = My_Address;
     HAL_UART_Transmit(&huart2, (uint8_t*)msg, sizeof(msg)-1, HAL_MAX_DELAY);
 
-    taskDISABLE_INTERRUPTS();
-    for(;;);
+    HAL_Delay(2000);
+    NVIC_SystemReset();
+    //taskDISABLE_INTERRUPTS();
+    //for(;;);
 }
+

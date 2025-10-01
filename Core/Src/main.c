@@ -21,13 +21,15 @@
  mesure mode STOP, watchdog, adresses LORA/Uart
  clignot sorties, pwm,  antirebond 2 boutons, 2e uart
 
- v1.3 09/2025 : fct : augmentation stack taches
+ v1.3 09/2025 : fct : augmentation stack taches, erreur_freertos
  v1.2 09/2025 : pile envoi uart, timer, code_erreur
  v1.1 09/2025 : STM32CubeMX + freertos+ subGhz+ Uart2+ RTC+ print_log+ event_queue
 */
 
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
+#include <communication.h>
+#include <fonctions.h>
 #include "main.h"
 #include "cmsis_os.h"
 
@@ -35,7 +37,6 @@
 /* USER CODE BEGIN Includes */
 
 #include "timers.h"
-#include "functions.h"
 #include <stdio.h>    // Pour sprintf
 #include <string.h>   // Pour strlen
 #include <stdarg.h>   // Pour va_list (si vous utilisez print_log)
@@ -68,9 +69,6 @@ IWDG_HandleTypeDef hiwdg;
 
 RTC_HandleTypeDef hrtc;
 
-SUBGHZ_HandleTypeDef hsubghz;
-
-UART_HandleTypeDef huart2;
 
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -84,36 +82,29 @@ osThreadId_t LORA_RX_TaskHandle;
 const osThreadAttr_t LORA_RX_Task_attributes = {
   .name = "LORA_RX_Task",
   .priority = (osPriority_t) osPriorityLow,
-  .stack_size = 128 * 4
+  .stack_size = 256 * 4
 };
 /* Definitions for LORA_TX_Task */
 osThreadId_t LORA_TX_TaskHandle;
 const osThreadAttr_t LORA_TX_Task_attributes = {
   .name = "LORA_TX_Task",
-  .priority = (osPriority_t) osPriorityLow,
-  .stack_size = 128 * 4
+  .priority = (osPriority_t) osPriorityLow4,
+  .stack_size = 256 * 4
 };
 /* Definitions for Appli_Task */
 osThreadId_t Appli_TaskHandle;
 const osThreadAttr_t Appli_Task_attributes = {
   .name = "Appli_Task",
-  .priority = (osPriority_t) osPriorityLow,
+  .priority = (osPriority_t) osPriorityLow5,
   .stack_size = 256 * 4
 };
-/* Definitions for Uart1_Task */
-osThreadId_t Uart1_TaskHandle;
-const osThreadAttr_t Uart1_Task_attributes = {
-  .name = "Uart1_Task",
-  .priority = (osPriority_t) osPriorityLow,
-  .stack_size = 256 * 4
-};
+
 /* Definitions for Event_Queue */
 osMessageQueueId_t Event_QueueHandle;
 const osMessageQueueAttr_t Event_Queue_attributes = {
   .name = "Event_Queue"
 };
 /* USER CODE BEGIN PV */
-
 
 /* USER CODE END PV */
 
@@ -128,7 +119,6 @@ void StartDefaultTask(void *argument);
 void LORA_RXTsk(void *argument);
 void LORA_TXTsk(void *argument);
 void Appli_Tsk(void *argument);
-void Uart1_Tsk(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -171,15 +161,22 @@ int main(void)
   MX_SUBGHZ_Init();
   MX_RTC_Init();
   MX_USART2_UART_Init();
+  MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
 
-  const char* init_msg = "RAK3172 Init\r\n";
+  //LOG_INFO("=== RAK3172 LoRa System Started ===");
+  //LOG_INFO("Log level: %d", get_log_level());
+
+  char init_msg[] = "-- RAK3172 Init. Log level:x";
+  init_msg[0] = dest_log;
+  init_msg[1] = My_Address;
+  init_msg[27] = get_log_level()+'0';
   uint16_t len = strlen(init_msg);
   HAL_UART_Transmit(&huart2, (uint8_t*)init_msg, len, 3000);
   HAL_Delay(500);
-  MX_IWDG_Init();
+
   // Afficher la cause du reset dès le démarrage
-  display_reset_cause();
+  //display_reset_cause();
 
   // configure l'oscillateur
  /* if (configure_lsi_oscillator() == HAL_OK) {
@@ -214,22 +211,22 @@ int main(void)
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
-  const char* init_msg2 = "suite\r\n";
-  len = strlen(init_msg2);
-  HAL_UART_Transmit(&huart2, (uint8_t*)init_msg2, len, 3000);
-  HAL_Delay(100);
-  char lsi_status[20];
-  sprintf(lsi_status, "LSI status: %s", __HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) ? "Ready" : "Not Ready");
-  len = strlen(lsi_status);
-  HAL_UART_Transmit(&huart2, (uint8_t*)lsi_status, len, 3000);
-  HAL_Delay(100);
+  //const char* init_msg2 = "suite\r\n";
+  //len = strlen(init_msg2);
+  //HAL_UART_Transmit(&huart2, (uint8_t*)init_msg2, len, 3000);
+  //HAL_Delay(100);
+  //char lsi_status[20];
+  //sprintf(lsi_status, "LSI status: %s", __HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) ? "Ready" : "Not Ready");
+  //len = strlen(lsi_status);
+  //HAL_UART_Transmit(&huart2, (uint8_t*)lsi_status, len, 3000);
+  //HAL_Delay(100);
 
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the queue(s) */
   /* creation of Event_Queue */
-  Event_QueueHandle = osMessageQueueNew (16, sizeof(uint16_t), &Event_Queue_attributes);
+  Event_QueueHandle = osMessageQueueNew (32, sizeof(uint16_t), &Event_Queue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -240,27 +237,19 @@ int main(void)
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* creation of LORA_RX_Task */
-  //LORA_RX_TaskHandle = osThreadNew(LORA_RXTsk, NULL, &LORA_RX_Task_attributes);
+  LORA_RX_TaskHandle = osThreadNew(LORA_RXTsk, NULL, &LORA_RX_Task_attributes);
 
   /* creation of LORA_TX_Task */
-  //LORA_TX_TaskHandle = osThreadNew(LORA_TXTsk, NULL, &LORA_TX_Task_attributes);
+  LORA_TX_TaskHandle = osThreadNew(LORA_TXTsk, NULL, &LORA_TX_Task_attributes);
 
   /* creation of Appli_Task */
   Appli_TaskHandle = osThreadNew(Appli_Tsk, NULL, &Appli_Task_attributes);
 
-  /* creation of Uart1_Task */
-  Uart1_TaskHandle = osThreadNew(Uart1_Tsk, NULL, &Uart1_Task_attributes);
-
-  const char* init_msg3 = "fin\r\n";
-  len = strlen(init_msg3);
-  HAL_UART_Transmit(&huart2, (uint8_t*)init_msg3, len, 3000);
-  HAL_Delay(100);
 
   /* USER CODE BEGIN RTOS_THREADS */
+  init_communication();
   init_functions();
 
-    LOG_INFO("=== RAK3172 LoRa System Started ===");
-    LOG_INFO("Log level: %d", get_log_level());
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
@@ -345,9 +334,9 @@ static void MX_IWDG_Init(void)
 
   /* USER CODE END IWDG_Init 1 */
   hiwdg.Instance = IWDG;
-  hiwdg.Init.Prescaler = IWDG_PRESCALER_64;
-  hiwdg.Init.Window = 14999;
-  hiwdg.Init.Reload = 14999;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_256;
+  hiwdg.Init.Window = 0xfff;
+  hiwdg.Init.Reload = 0xfff;
   if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
   {
     Error_Handler();
@@ -628,45 +617,6 @@ HAL_StatusTypeDef configure_lsi_oscillator(void)
     }
 }
 
-/**
- * @brief Envoyer un message LoRa
- * @param message: Message à envoyer (string)
- * @retval HAL_StatusTypeDef: Statut de l'opération
- */
-HAL_StatusTypeDef send_lora_message(const char* message)
-{
-    uint8_t radio_status;
-    uint16_t message_length = strlen(message);
-
-    // Vérifier que le radio est libre
-    if (HAL_SUBGHZ_ReadRegister(&hsubghz, 0x01, &radio_status) != HAL_OK) {
-        LOG_ERROR("Failed to read radio status");
-        return HAL_ERROR;
-    }
-
-    if (radio_status & 0x01) { // En transmission
-        LOG_WARNING("LoRa radio busy");
-        return HAL_BUSY;
-    }
-
-    // Écrire le message dans le buffer radio
-    if (HAL_SUBGHZ_WriteBuffer(&hsubghz, 0x00, (uint8_t*)message, message_length) != HAL_OK) {
-        LOG_ERROR("Failed to write LoRa buffer");
-        return HAL_ERROR;
-    }
-
-    // Démarrer la transmission
-    uint8_t tx_cmd = 0x83; // Commande TX
-    HAL_StatusTypeDef status = HAL_SUBGHZ_ExecSetCmd(&hsubghz, tx_cmd, NULL, 0);
-
-    if (status == HAL_OK) {
-        LOG_INFO("LoRa transmission started: %s", message);
-    } else {
-        LOG_ERROR("Failed to start LoRa transmission: %d", status);
-    }
-
-    return status;
-}
 
 /**
  * @brief Envoyer un événement dans la queue
@@ -915,8 +865,8 @@ void Appli_Tsk(void *argument)
 					HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_1); // Toggle LED
 
 					// Envoyer message LoRa
-					char message[] = "Button pressed!";
-					send_lora_message(message);
+					char messa[] = "Button pressed!";
+					send_lora_message((const char*)messa, 16, 'Q');
 					break;
 				}
 
@@ -944,7 +894,7 @@ void Appli_Tsk(void *argument)
 				case EVENT_UART_RX: {
 					LOG_INFO("UART message received event");
 					// Actions pour message UART reçu
-					HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_1); // Toggle LED
+					reception_message_Uart2();
 					break;
 				}
 
@@ -1007,8 +957,9 @@ void Appli_Tsk(void *argument)
 					//LOG_INFO("a");
 					//LOG_INFO("TIMER 20s event");
 					//osDelay(1000);
-					uint8_t statut=envoie_mess_ASC("Message periodique 30s");
-					if (statut) { code_erreur= code_erreur_envoi; err_donnee1=statut;}
+					check_stack_usage();
+					//uint8_t statut=envoie_mess_ASC("Message periodique 30s");
+					//if (statut) { code_erreur= code_erreur_envoi; err_donnee1=statut;}
 					//uint8_t statut=envoie_mess_ASC("PRS");
 					//osDelay(100);
 					//LOG_INFO("statut:%d", statut);
@@ -1020,7 +971,7 @@ void Appli_Tsk(void *argument)
 					osDelay(100);
 					//LOG_INFO("Il reste %lu ticks avant la prochaine expiration\n",
 					//	   (expiry > now) ? (expiry - now) : 0);
-					osDelay(100);
+					//osDelay(100);
 					break;
 				}
 
@@ -1043,6 +994,7 @@ void Appli_Tsk(void *argument)
 }
 
 /* USER CODE BEGIN Header_Uart1_Tsk */
+/* USER CODE END Header_Uart1_Tsk */
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
@@ -1058,71 +1010,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     }
 }
 
-/**
-* @brief Function implementing the Uart1_Task thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_Uart1_Tsk */
-void Uart1_Tsk(void *argument)
-{
-  /* USER CODE BEGIN Uart1_Tsk */
-  // Démarrer la surveillance watchdog pour cette tâche
-  watchdog_task_start(WATCHDOG_TASK_UART1);
-  LOG_INFO("Uart RX_Task started with watchdog protection");
-  
-	uint8_t rx_buffer[MESS_LG_MAX];
-	uint8_t rx_char;
-    uint16_t buffer_index = 0;
-    HAL_StatusTypeDef status;
-
-    osDelay(100);
-
-	 memset(rx_buffer, 0, sizeof(rx_buffer));
-
-	for(;;)
-	{
-		// Enregistrer un heartbeat pour le watchdog
-		watchdog_task_heartbeat(WATCHDOG_TASK_UART1);
-		
-		// Lire depuis UART1
-		status = HAL_UART_Receive(&huart2, &rx_char, 1, 1000);
-
-		if (status == HAL_OK)
-		{
-		      LOG_INFO("Received: 0x%02X ('%c')", rx_char,
-		                     (rx_char >= 32 && rx_char <= 126) ? rx_char : '.');
-
-		            // Stocker dans le buffer
-		            if (buffer_index < sizeof(rx_buffer) - 1) {
-		                rx_buffer[buffer_index++] = rx_char;
-		            }
-
-		            // Traiter si fin de ligne ou buffer plein
-		            if (rx_char == '\n' || rx_char == '\r' || buffer_index >= sizeof(rx_buffer) - 1) {
-		                rx_buffer[buffer_index] = '\0';
-		                LOG_INFO("Complete message: %s", rx_buffer);
-
-		                // Envoyer événement
-		                event_t evt = {EVENT_UART_RX, SOURCE_UART, buffer_index};
-		                osMessageQueuePut(Event_QueueHandle, &evt, 0, 0);
-
-		                // Réinitialiser le buffer
-		                buffer_index = 0;
-		                memset(rx_buffer, 0, sizeof(rx_buffer));
-		            }
-		} else if (status == HAL_TIMEOUT) {
-		    //LOG_WARNING("UART timeout - no data received");
-		} else {
-		    LOG_ERROR("UART receive error: %d", status);
-		    osDelay(100);
-		}
-
-		osDelay(100);
-		//LOG_INFO(".");
-	}
-  /* USER CODE END Uart1_Tsk */
-}
 
 /**
   * @brief  Period elapsed callback in non blocking mode
