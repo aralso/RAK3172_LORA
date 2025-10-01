@@ -16,6 +16,7 @@
 #define END_NODE
 #define EMETTEUR 'U'
 
+//#define WATCHDOG
 
 // Structure pour les événements
 typedef struct {

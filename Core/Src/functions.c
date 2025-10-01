@@ -34,7 +34,7 @@ osThreadId_t Uart_TX_TaskHandle;
 const osThreadAttr_t Uart_TX_Task_attributes = {
   .name = "Uart_TXTask",
   .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 128 * 4
+  .stack_size = 256 * 4
 };
 
 
@@ -589,12 +589,14 @@ void watchdog_init(void)
         WatchdogTimerCallback              // Callback
     );
     
-    if (HTimer_Watchdog != NULL) {
-        xTimerStart(HTimer_Watchdog, 0);
-        LOG_INFO("Watchdog timer started");
-    } else {
-        LOG_ERROR("Failed to create watchdog timer");
-    }
+	#ifdef WATCHDOG
+		if (HTimer_Watchdog != NULL) {
+			xTimerStart(HTimer_Watchdog, 0);
+			LOG_INFO("Watchdog timer started");
+		} else {
+			LOG_ERROR("Failed to create watchdog timer");
+		}
+	#endif
 }
 
 /**
@@ -902,3 +904,34 @@ void load_diagnostic_data(void)
     }
 }
 
+void assert_failed(const char *file, int line)
+{
+    char msg[100];
+    int len = snprintf(msg, sizeof(msg), "ASSERT failed at %s:%d\r\n", file, line);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, HAL_MAX_DELAY);
+
+    // Bloquer ici
+    taskDISABLE_INTERRUPTS();
+    for(;;);
+}
+
+// Hook appelé si une tâche dépasse sa pile
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    char msg[100];
+    int len = snprintf(msg, sizeof(msg), "Stack overflow in task: %s\r\n", pcTaskName);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, HAL_MAX_DELAY);
+
+    taskDISABLE_INTERRUPTS();
+    for(;;);
+}
+
+// Hook appelé si malloc échoue
+void vApplicationMallocFailedHook(void)
+{
+    char msg[] = "Malloc failed!\r\n";
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, sizeof(msg)-1, HAL_MAX_DELAY);
+
+    taskDISABLE_INTERRUPTS();
+    for(;;);
+}

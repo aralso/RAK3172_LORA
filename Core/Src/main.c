@@ -21,6 +21,7 @@
  mesure mode STOP, watchdog, adresses LORA/Uart
  clignot sorties, pwm,  antirebond 2 boutons, 2e uart
 
+ v1.3 09/2025 : fct : augmentation stack taches
  v1.2 09/2025 : pile envoi uart, timer, code_erreur
  v1.1 09/2025 : STM32CubeMX + freertos+ subGhz+ Uart2+ RTC+ print_log+ event_queue
 */
@@ -97,14 +98,14 @@ osThreadId_t Appli_TaskHandle;
 const osThreadAttr_t Appli_Task_attributes = {
   .name = "Appli_Task",
   .priority = (osPriority_t) osPriorityLow,
-  .stack_size = 128 * 4
+  .stack_size = 256 * 4
 };
 /* Definitions for Uart1_Task */
 osThreadId_t Uart1_TaskHandle;
 const osThreadAttr_t Uart1_Task_attributes = {
   .name = "Uart1_Task",
   .priority = (osPriority_t) osPriorityLow,
-  .stack_size = 128 * 4
+  .stack_size = 256 * 4
 };
 /* Definitions for Event_Queue */
 osMessageQueueId_t Event_QueueHandle;
@@ -177,9 +178,8 @@ int main(void)
   HAL_UART_Transmit(&huart2, (uint8_t*)init_msg, len, 3000);
   HAL_Delay(500);
   MX_IWDG_Init();
-
   // Afficher la cause du reset dès le démarrage
-  //display_reset_cause();
+  display_reset_cause();
 
   // configure l'oscillateur
  /* if (configure_lsi_oscillator() == HAL_OK) {
@@ -240,10 +240,10 @@ int main(void)
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* creation of LORA_RX_Task */
-  LORA_RX_TaskHandle = osThreadNew(LORA_RXTsk, NULL, &LORA_RX_Task_attributes);
+  //LORA_RX_TaskHandle = osThreadNew(LORA_RXTsk, NULL, &LORA_RX_Task_attributes);
 
   /* creation of LORA_TX_Task */
-  LORA_TX_TaskHandle = osThreadNew(LORA_TXTsk, NULL, &LORA_TX_Task_attributes);
+  //LORA_TX_TaskHandle = osThreadNew(LORA_TXTsk, NULL, &LORA_TX_Task_attributes);
 
   /* creation of Appli_Task */
   Appli_TaskHandle = osThreadNew(Appli_Tsk, NULL, &Appli_Task_attributes);
@@ -341,6 +341,7 @@ static void MX_IWDG_Init(void)
   /* USER CODE END IWDG_Init 0 */
 
   /* USER CODE BEGIN IWDG_Init 1 */
+	#ifdef WATCHDOG
 
   /* USER CODE END IWDG_Init 1 */
   hiwdg.Instance = IWDG;
@@ -352,6 +353,7 @@ static void MX_IWDG_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN IWDG_Init 2 */
+	#endif
 
   /* USER CODE END IWDG_Init 2 */
 
@@ -705,8 +707,10 @@ void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
   // Démarrer la surveillance watchdog pour cette tâche
-  watchdog_task_start(WATCHDOG_TASK_DEFAULT);
-  LOG_INFO("DefaultTask started with watchdog protection");
+	#ifdef WATCHDOG
+	  watchdog_task_start(WATCHDOG_TASK_DEFAULT);
+	  LOG_INFO("DefaultTask started with watchdog protection");
+	#endif
   
   uint32_t last_status_time = 0;
   uint32_t last_save_time = 0;
@@ -1065,7 +1069,7 @@ void Uart1_Tsk(void *argument)
   /* USER CODE BEGIN Uart1_Tsk */
   // Démarrer la surveillance watchdog pour cette tâche
   watchdog_task_start(WATCHDOG_TASK_UART1);
-  LOG_INFO("Uart1_Task started with watchdog protection");
+  LOG_INFO("Uart RX_Task started with watchdog protection");
   
 	uint8_t rx_buffer[MESS_LG_MAX];
 	uint8_t rx_char;
