@@ -29,11 +29,11 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
-#include "timers.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "timers.h"
 #include "functions.h"
 #include <stdio.h>    // Pour sprintf
 #include <string.h>   // Pour strlen
@@ -63,6 +63,8 @@ HAL_StatusTypeDef configure_lsi_oscillator(void);
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+IWDG_HandleTypeDef hiwdg;
+
 RTC_HandleTypeDef hrtc;
 
 SUBGHZ_HandleTypeDef hsubghz;
@@ -80,29 +82,29 @@ const osThreadAttr_t defaultTask_attributes = {
 osThreadId_t LORA_RX_TaskHandle;
 const osThreadAttr_t LORA_RX_Task_attributes = {
   .name = "LORA_RX_Task",
-  .priority = (osPriority_t) osPriorityAboveNormal,
-  .stack_size = 192 * 4
+  .priority = (osPriority_t) osPriorityLow,
+  .stack_size = 128 * 4
 };
 /* Definitions for LORA_TX_Task */
 osThreadId_t LORA_TX_TaskHandle;
 const osThreadAttr_t LORA_TX_Task_attributes = {
   .name = "LORA_TX_Task",
-  .priority = (osPriority_t) osPriorityAboveNormal,
-  .stack_size = 192 * 4
+  .priority = (osPriority_t) osPriorityLow,
+  .stack_size = 128 * 4
 };
 /* Definitions for Appli_Task */
 osThreadId_t Appli_TaskHandle;
 const osThreadAttr_t Appli_Task_attributes = {
   .name = "Appli_Task",
-  .priority = (osPriority_t) osPriorityHigh,
-  .stack_size = 256 * 4
+  .priority = (osPriority_t) osPriorityLow,
+  .stack_size = 128 * 4
 };
 /* Definitions for Uart1_Task */
 osThreadId_t Uart1_TaskHandle;
 const osThreadAttr_t Uart1_Task_attributes = {
   .name = "Uart1_Task",
-  .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 256 * 4
+  .priority = (osPriority_t) osPriorityLow,
+  .stack_size = 128 * 4
 };
 /* Definitions for Event_Queue */
 osMessageQueueId_t Event_QueueHandle;
@@ -120,6 +122,7 @@ static void MX_GPIO_Init(void);
 static void MX_SUBGHZ_Init(void);
 static void MX_RTC_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_IWDG_Init(void);
 void StartDefaultTask(void *argument);
 void LORA_RXTsk(void *argument);
 void LORA_TXTsk(void *argument);
@@ -169,6 +172,15 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  const char* init_msg = "RAK3172 Init\r\n";
+  uint16_t len = strlen(init_msg);
+  HAL_UART_Transmit(&huart2, (uint8_t*)init_msg, len, 3000);
+  HAL_Delay(500);
+  MX_IWDG_Init();
+
+  // Afficher la cause du reset dès le démarrage
+  //display_reset_cause();
+
   // configure l'oscillateur
  /* if (configure_lsi_oscillator() == HAL_OK) {
         LOG_INFO("LSI configured (no TCXO)");
@@ -202,6 +214,16 @@ int main(void)
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
+  const char* init_msg2 = "suite\r\n";
+  len = strlen(init_msg2);
+  HAL_UART_Transmit(&huart2, (uint8_t*)init_msg2, len, 3000);
+  HAL_Delay(100);
+  char lsi_status[20];
+  sprintf(lsi_status, "LSI status: %s", __HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) ? "Ready" : "Not Ready");
+  len = strlen(lsi_status);
+  HAL_UART_Transmit(&huart2, (uint8_t*)lsi_status, len, 3000);
+  HAL_Delay(100);
+
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
@@ -226,15 +248,19 @@ int main(void)
   /* creation of Appli_Task */
   Appli_TaskHandle = osThreadNew(Appli_Tsk, NULL, &Appli_Task_attributes);
 
-  /* creation of Uart1_Task RX */
+  /* creation of Uart1_Task */
   Uart1_TaskHandle = osThreadNew(Uart1_Tsk, NULL, &Uart1_Task_attributes);
 
-  init_functions();
-
-  LOG_INFO("=== RAK3172 LoRa System Started ===");
-  LOG_INFO("Log level: %d", get_log_level());
+  const char* init_msg3 = "fin\r\n";
+  len = strlen(init_msg3);
+  HAL_UART_Transmit(&huart2, (uint8_t*)init_msg3, len, 3000);
+  HAL_Delay(100);
 
   /* USER CODE BEGIN RTOS_THREADS */
+  init_functions();
+
+    LOG_INFO("=== RAK3172 LoRa System Started ===");
+    LOG_INFO("Log level: %d", get_log_level());
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
@@ -300,6 +326,35 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief IWDG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_IWDG_Init(void)
+{
+
+  /* USER CODE BEGIN IWDG_Init 0 */
+
+  /* USER CODE END IWDG_Init 0 */
+
+  /* USER CODE BEGIN IWDG_Init 1 */
+
+  /* USER CODE END IWDG_Init 1 */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_64;
+  hiwdg.Init.Window = 14999;
+  hiwdg.Init.Reload = 14999;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG_Init 2 */
+
+  /* USER CODE END IWDG_Init 2 */
+
 }
 
 /**
@@ -649,10 +704,36 @@ osStatus_t send_simple_event(uint8_t type)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
+  // Démarrer la surveillance watchdog pour cette tâche
+  watchdog_task_start(WATCHDOG_TASK_DEFAULT);
+  LOG_INFO("DefaultTask started with watchdog protection");
+  
+  uint32_t last_status_time = 0;
+  uint32_t last_save_time = 0;
+  
   /* Infinite loop */
   for(;;)
   {
-    osDelay(100);
+    // Enregistrer un heartbeat pour le watchdog
+    watchdog_task_heartbeat(WATCHDOG_TASK_DEFAULT);
+    
+    uint32_t current_time = HAL_GetTick();
+    
+    // Afficher le statut du watchdog toutes les 30 secondes
+    if (current_time - last_status_time > 30000) {
+        watchdog_print_status();
+        last_status_time = current_time;
+    }
+    
+    // Sauvegarder les données de diagnostic toutes les 60 secondes
+    if (current_time - last_save_time > 60000) {
+        save_diagnostic_data();
+        last_save_time = current_time;
+    }
+    HAL_IWDG_Refresh(&hiwdg);
+    
+
+    osDelay(1000); // Attendre 1 seconde entre chaque heartbeat
   }
   /* USER CODE END 5 */
 }
@@ -667,16 +748,20 @@ void StartDefaultTask(void *argument)
 void LORA_RXTsk(void *argument)
 {
   /* USER CODE BEGIN LORA_RXTsk */
+  // Démarrer la surveillance watchdog pour cette tâche
+  watchdog_task_start(WATCHDOG_TASK_LORA_RX);
+  LOG_INFO("LoRa RX Task started with watchdog protection");
+  
   /* Infinite loop */
 	uint8_t rx_buffer[64];
 	uint8_t radio_status;
 
     osDelay(100);
-	LOG_INFO("LoRa RX Task started");
-    osDelay(100);
 
 	for(;;)
 	{
+		// Enregistrer un heartbeat pour le watchdog
+		watchdog_task_heartbeat(WATCHDOG_TASK_LORA_RX);
 
 		// Vérifier l'état du radio
 		if (HAL_SUBGHZ_ReadRegister(&hsubghz, 0x01, &radio_status) == HAL_OK) {
@@ -717,6 +802,10 @@ void LORA_RXTsk(void *argument)
 void LORA_TXTsk(void *argument)
 {
   /* USER CODE BEGIN LORA_TXTsk */
+  // Démarrer la surveillance watchdog pour cette tâche
+  watchdog_task_start(WATCHDOG_TASK_LORA_TX);
+  LOG_INFO("LoRa TX Task started with watchdog protection");
+  
   /* Infinite loop */
 
   uint32_t message_count = 0;
@@ -724,11 +813,12 @@ void LORA_TXTsk(void *argument)
   uint8_t radio_status;
 
   osDelay(100);
-  LOG_INFO("LoRa TX Task started");
-  osDelay(100);
 
   for(;;)
   {
+	  // Enregistrer un heartbeat pour le watchdog
+	  watchdog_task_heartbeat(WATCHDOG_TASK_LORA_TX);
+	  
 	  // Attendre un délai
 	  osDelay(12000);
 	  //LOG_INFO("a");
@@ -791,12 +881,18 @@ void LORA_TXTsk(void *argument)
 void Appli_Tsk(void *argument)
 {
   /* USER CODE BEGIN Appli_Tsk */
+  // Démarrer la surveillance watchdog pour cette tâche
+  watchdog_task_start(WATCHDOG_TASK_APPLI);
+  LOG_INFO("Appli_Task started with watchdog protection");
 
     event_t evt;
     osStatus_t status;
 
     for(;;)
     {
+        // Enregistrer un heartbeat pour le watchdog
+        watchdog_task_heartbeat(WATCHDOG_TASK_APPLI);
+        
         // Attendre un événement (bloque tant qu'il n'y a rien)
         status = osMessageQueueGet(Event_QueueHandle, &evt, NULL, osWaitForever);
 
@@ -967,19 +1063,24 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void Uart1_Tsk(void *argument)
 {
   /* USER CODE BEGIN Uart1_Tsk */
+  // Démarrer la surveillance watchdog pour cette tâche
+  watchdog_task_start(WATCHDOG_TASK_UART1);
+  LOG_INFO("Uart1_Task started with watchdog protection");
+  
 	uint8_t rx_buffer[MESS_LG_MAX];
 	uint8_t rx_char;
     uint16_t buffer_index = 0;
     HAL_StatusTypeDef status;
 
     osDelay(100);
-	//LOG_INFO("UART1 RX Task started");
-	osDelay(100);
 
 	 memset(rx_buffer, 0, sizeof(rx_buffer));
 
 	for(;;)
 	{
+		// Enregistrer un heartbeat pour le watchdog
+		watchdog_task_heartbeat(WATCHDOG_TASK_UART1);
+		
 		// Lire depuis UART1
 		status = HAL_UART_Receive(&huart2, &rx_char, 1, 1000);
 
@@ -999,8 +1100,8 @@ void Uart1_Tsk(void *argument)
 		                LOG_INFO("Complete message: %s", rx_buffer);
 
 		                // Envoyer événement
-		                event_t evt = {EVENT_UART_RX, SOURCE_UART, buffer_index, HAL_GetTick()};
-		                //osMessageQueuePut(Event_QueueHandle, &evt, 0, 0);
+		                event_t evt = {EVENT_UART_RX, SOURCE_UART, buffer_index};
+		                osMessageQueuePut(Event_QueueHandle, &evt, 0, 0);
 
 		                // Réinitialiser le buffer
 		                buffer_index = 0;
@@ -1074,7 +1175,7 @@ void Error_Handler(void)
 		HAL_NVIC_SystemReset();
 	#endif
 
-    /* USER CODE END Error_Handler_Debug */
+  /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
 /**

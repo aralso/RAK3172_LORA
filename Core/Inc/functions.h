@@ -104,4 +104,46 @@ uint8_t envoie_mess_bin(const uint8_t *buf);
 uint8_t deci (uint8_t val);
 void envoi_code_erreur(void);
 
+// === SYSTÈME DE WATCHDOG ===
+// Identifiants des tâches pour le watchdog
+typedef enum {
+    WATCHDOG_TASK_DEFAULT = 0,
+    WATCHDOG_TASK_LORA_RX,
+    WATCHDOG_TASK_LORA_TX,
+    WATCHDOG_TASK_APPLI,
+    WATCHDOG_TASK_UART1,
+    WATCHDOG_TASK_UART_TX,
+    WATCHDOG_TASK_COUNT  // Nombre total de tâches surveillées
+} watchdog_task_id_t;
+
+// Structure pour le suivi des tâches
+typedef struct {
+    uint32_t last_heartbeat;    // Timestamp du dernier heartbeat
+    uint32_t timeout_ms;        // Timeout en millisecondes
+    uint8_t is_active;          // Tâche active ou non
+    uint8_t error_count;        // Nombre d'erreurs consécutives
+} watchdog_task_info_t;
+
+// Configuration du watchdog
+#define WATCHDOG_TIMEOUT_MS        30000   // 30 secondes par défaut
+#define WATCHDOG_ERROR_THRESHOLD   3       // Nombre d'erreurs avant reset
+#define WATCHDOG_CHECK_INTERVAL    5000    // Vérification toutes les 5 secondes
+
+// Fonctions du système watchdog
+void watchdog_init(void);
+void watchdog_task_heartbeat(watchdog_task_id_t task_id);
+void watchdog_task_start(watchdog_task_id_t task_id);
+void watchdog_task_stop(watchdog_task_id_t task_id);
+void watchdog_check_all_tasks(void);
+void watchdog_reset_system(void);
+uint8_t watchdog_is_task_alive(watchdog_task_id_t task_id);
+void watchdog_print_status(void);
+void watchdog_test_task_block(watchdog_task_id_t task_id, uint32_t duration_ms);
+
+// Fonctions de diagnostic du reset
+void display_reset_cause(void);
+const char* get_reset_cause_string(uint32_t reset_flags);
+void save_diagnostic_data(void);
+void load_diagnostic_data(void);
+
 #endif /* INC_FUNCTIONS_H_ */
