@@ -15,7 +15,7 @@
 #define END_NODE
 #define My_Address 'U'
 
-#define WATCHDOG
+//#define WATCHDOG
 
 // Structure pour les événements
 typedef struct {
@@ -52,7 +52,7 @@ typedef enum {
     WATCHDOG_TASK_LORA_RX,
     WATCHDOG_TASK_LORA_TX,
     WATCHDOG_TASK_APPLI,
-    WATCHDOG_TASK_UART1,
+    WATCHDOG_TASK_UART_RX,
     WATCHDOG_TASK_UART_TX,
     WATCHDOG_TASK_COUNT  // Nombre total de tâches surveillées
 } watchdog_task_id_t;

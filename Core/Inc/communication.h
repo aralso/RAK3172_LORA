@@ -14,6 +14,7 @@
 #include <stdarg.h>
 #include "cmsis_os.h"
 #include "timers.h"
+#include "queue.h"
 
 
 
@@ -46,26 +47,11 @@ extern uint8_t err_donnee1, err_donnee2;
 #define code_erreur_dequeue 0x51
 
 #define erreur_RX_full         0x20
-#define erreur_RX_buff_vide    0x21
-#define erreur_RX_pas_fin      0x22
-#define erreur_RX_framing      0x23
+#define erreur_rx_uart_bin		0x21
+#define erreur_RX_queue        0x23
 #define timeout_RX             0x24
-#define erreur_TX_empty        0x25
-#define erreur_TX_full         0x26
-#define erreur_TX_pas_fin      0x27
-#define erreur_TX_DMA          0x28
-#define erreur_mess_tab        0x29 // +2
-#define erreur_mess_decod_hexa 0x2C
-#define timeout_TX             0x2D
-#define erreur_rtos            0x2E
+#define erreur_queue_appli     0x25
 #define erreur_mess            0x2F
-#define erreur_uart            0x30
-#define erreur_messageIn       0x31
-
-#define erreur_analog               0x42  // 40 et 41:periph
-#define erreur_demar                0x43
-#define erreur_util_rtos            0x43
-#define erreur_tab                  0x44
 
 
 
@@ -82,9 +68,16 @@ typedef struct
   TimerHandle_t     h_timeout_TX;
 } UartStruct;
 
+typedef struct {
+    uint8_t data[MESS_LG_MAX];        // Données du message
+    uint8_t length;          // Longueur du message
+    uint8_t type;            // Type : 0=ASCII, 1=Binaire
+    uint8_t source;          // Source (UART1, UART2, etc.)
+} in_message_t;
+
 extern UartStruct UartSt[NB_UART];
-void reception_message_Uart2(void);
-uint8_t envoie_routage(const uint8_t *mess, uint8_t len);
+void reception_message_Uart2(in_message_t *msg);
+uint8_t envoie_routage( uint8_t *mess, uint8_t len);
 
 
 // Fonction principale de logging
@@ -103,6 +96,8 @@ extern osThreadId_t Uart_TX_TaskHandle;
 extern UART_HandleTypeDef huart2;
 extern SUBGHZ_HandleTypeDef hsubghz;
 extern HAL_StatusTypeDef send_lora_message(const char* message, uint8_t message_length, uint8_t dest);
+extern QueueHandle_t in_message_queue;  // queue pour les messages entrants
+
 
 // Fonction pour changer le niveau de verbosité à l'exécution
 void set_log_level(uint8_t level);

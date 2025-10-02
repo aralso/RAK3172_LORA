@@ -21,6 +21,7 @@
  mesure mode STOP, watchdog, adresses LORA/Uart
  clignot sorties, pwm,  antirebond 2 boutons, 2e uart
 
+ v1.4 09/2025 : refonte reception uart
  v1.3 09/2025 : fct : augmentation stack taches, erreur_freertos
  v1.2 09/2025 : pile envoi uart, timer, code_erreur
  v1.1 09/2025 : STM32CubeMX + freertos+ subGhz+ Uart2+ RTC+ print_log+ event_queue
@@ -37,6 +38,7 @@
 /* USER CODE BEGIN Includes */
 
 #include "timers.h"
+#include "queue.h"
 #include <stdio.h>    // Pour sprintf
 #include <string.h>   // Pour strlen
 #include <stdarg.h>   // Pour va_list (si vous utilisez print_log)
@@ -61,6 +63,7 @@ HAL_StatusTypeDef configure_lsi_oscillator(void);
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
+ QueueHandle_t Event_QueueHandle;
 
 /* USER CODE END PM */
 
@@ -99,11 +102,6 @@ const osThreadAttr_t Appli_Task_attributes = {
   .stack_size = 256 * 4
 };
 
-/* Definitions for Event_Queue */
-osMessageQueueId_t Event_QueueHandle;
-const osMessageQueueAttr_t Event_Queue_attributes = {
-  .name = "Event_Queue"
-};
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -226,7 +224,7 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of Event_Queue */
-  Event_QueueHandle = osMessageQueueNew (32, sizeof(uint16_t), &Event_Queue_attributes);
+  Event_QueueHandle = xQueueCreate(32, sizeof(uint16_t));
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -631,7 +629,12 @@ osStatus_t send_event(uint8_t type, uint8_t source, uint16_t data)
     evt.type = type;
     evt.source = source;
     evt.data = data;
-    return osMessageQueuePut(Event_QueueHandle, &evt, 0, 0);
+    if (xQueueSend(Event_QueueHandle, &evt, 0) != pdPASS)
+    {
+        LOG_ERROR("Event queue full - message lost");
+        return osErrorResource;
+    }
+    return osOK;
 }
 
 /**
@@ -893,8 +896,12 @@ void Appli_Tsk(void *argument)
 
 				case EVENT_UART_RX: {
 					LOG_INFO("UART message received event");
-					// Actions pour message UART reçu
-					reception_message_Uart2();
+					in_message_t message_in;
+			        if (xQueueReceive(in_message_queue, &message_in, portMAX_DELAY) == pdPASS)
+			        {
+			            // Traiter le message selon son type
+						reception_message_Uart2(&message_in);
+			        }
 					break;
 				}
 
@@ -1084,3 +1091,21 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
+
+void assert_failed(const char *file, int line)
+{
+    char msg[100];
+    int len = snprintf(msg, sizeof(msg), "-- ASSERT failed at %s:%d\r\n", file, line);
+    msg[0] = dest_log;
+    msg[1] = My_Address;
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, HAL_MAX_DELAY);
+
+    HAL_Delay(2000);
+
+    // Reset du système
+    NVIC_SystemReset();
+    // Bloquer ici
+    //taskDISABLE_INTERRUPTS();
+    //for(;;);
+}
+

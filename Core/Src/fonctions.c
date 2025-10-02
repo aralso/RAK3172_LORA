@@ -9,6 +9,7 @@
 #include <fonctions.h>
 #include "cmsis_os.h"
 #include "timers.h"
+#include "queue.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -32,7 +33,7 @@ uint8_t nb_reset=0;
 
 
 extern UART_HandleTypeDef huart2;
-extern osMessageQueueId_t Event_QueueHandle;
+extern QueueHandle_t Event_QueueHandle;
 extern osThreadId_t Appli_TaskHandle;
 extern osThreadId_t LORA_TX_TaskHandle;
 extern osThreadId_t LORA_RX_TaskHandle;
@@ -80,13 +81,19 @@ void init_functions(void)
 static void Timer24hCallback(TimerHandle_t xTimer)
 {
 	event_t evt = { EVENT_TIMER_24h, 0, 0 };
-	osMessageQueuePut(Event_QueueHandle, &evt, 0, 0);
+	if (xQueueSend(Event_QueueHandle, &evt, 0) != pdPASS)
+	{
+	    LOG_ERROR("Event queue full - message lost");
+	}
 }
 
 static void Timer20minCallback(TimerHandle_t xTimer)
 {
 	event_t evt = { EVENT_TIMER_20min, 0, 0 };
-	osMessageQueuePut(Event_QueueHandle, &evt, 0, 0);
+	if (xQueueSend(Event_QueueHandle, &evt, 0) != pdPASS)
+	{
+	    LOG_ERROR("Event queue full - message lost");
+	}
 }
 
 /**
@@ -569,22 +576,6 @@ void load_diagnostic_data(void)
     }
 }
 
-void assert_failed(const char *file, int line)
-{
-    char msg[100];
-    int len = snprintf(msg, sizeof(msg), "-- ASSERT failed at %s:%d\r\n", file, line);
-    msg[0] = dest_log;
-    msg[1] = My_Address;
-    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, HAL_MAX_DELAY);
-
-    HAL_Delay(2000);
-
-    // Reset du système
-    NVIC_SystemReset();
-    // Bloquer ici
-    //taskDISABLE_INTERRUPTS();
-    //for(;;);
-}
 
 // Hook appelé si une tâche dépasse sa pile
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)

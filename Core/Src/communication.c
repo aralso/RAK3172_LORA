@@ -9,6 +9,8 @@
 #include <fonctions.h>
 #include "cmsis_os.h"
 #include "timers.h"
+#include "queue.h"
+#include "semphr.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -20,35 +22,37 @@ uint8_t table_routage[nb_ligne_routage][6] = {
     {'2', 'z', 7, 'Q', 0, 0}
 };
 
+
+QueueHandle_t in_message_queue;  // queue pour les messages entrants
+
 // Timers
 TimerHandle_t timer_handles[2];
+
+static uint8_t log_buffer[MESS_LG_MAX];
+static SemaphoreHandle_t log_mutex = NULL;
 
 SUBGHZ_HandleTypeDef hsubghz;
 
 UART_HandleTypeDef huart2;
 
-uint8_t  flag_trame_rx_Uart2;
-uint8_t  Uart2_rx_buff[MESS_LG_MAX+20];
-uint8_t  Uart2_rx_head, Uart2_rx_tail;
-uint8_t  Uart2_rx_type_trame;
-uint8_t  Uart2_rx_nb_car_recu;
-uint8_t  Uart2_rx_longu;
-uint8_t  Uart2_rx_debut_trame, Uart2_rx_attente;
-uint8_t mess_ok, flag_comm_transfert;
+static uint8_t rx_char;
+static uint8_t expected_length = 0;
+static uint8_t message_type = 0;
+static in_message_t mess_rx_uart;
+static uint8_t car_valid;
+static uint8_t buffer_index = 0;
 
 UartStruct UartSt[NB_UART];
 
-uint8_t message_in[MESS_LG_MAX];
-uint8_t longueur_message_in;
 uint8_t message[MESS_LG_MAX];
 
 extern UART_HandleTypeDef huart2;
-extern osMessageQueueId_t Event_QueueHandle;
+extern QueueHandle_t Event_QueueHandle;
 
 void Uart_RX_Tsk(void *argument);
 void Uart_TX_Tsk(void *argument);
 uint8_t Uart2_receive (uint8_t* data, uint8_t type);
-void traitement_rx (char unsigned longueur_m); // var :longueur n'inclut pas le car_fin_trame (inclus emetteur) : 4 pour RLT1
+void traitement_rx (uint8_t*, uint8_t lg); // var :longueur n'inclut pas le car_fin_trame (inclus emetteur) : 4 pour RLT1
 
 /* Definitions for Uart2_RX_Task */
 osThreadId_t Uart_RX_TaskHandle;
@@ -70,8 +74,6 @@ const osThreadAttr_t Uart_TX_Task_attributes = {
 // Variable globale pour le niveau de verbosité
 static uint8_t current_log_level = CURRENT_LOG_LEVEL;
 
-// Buffer pour le formatage
-static char log_buffer[256];  // TODO : non protégé par un appel multiple
 
 static uint8_t mess_buffer[MESS_BUFFER_SIZE];
 static uint16_t head = 0;
@@ -90,12 +92,15 @@ void TIMEOUT_RX_Callback(TimerHandle_t xTimer)
 	LOG_WARNING("RX Timeout for UART %lu", num_uart);
 	    code_erreur=timeout_RX;   //timeout apres 1 car Recu
     err_donnee1= num_uart+'0';
+    buffer_index = 0;
     raz_Uart(num_uart);
 }
 
 
 void init_communication(void)
 {
+    log_mutex = xSemaphoreCreateMutex();
+
    /* creation of Uart_RX_Task */
    Uart_RX_TaskHandle = osThreadNew(Uart_RX_Tsk, NULL, &Uart_RX_Task_attributes);
 
@@ -113,6 +118,15 @@ void init_communication(void)
    UartSt[0].h_timeout_RX = xTimerCreate("TimeoutRX2", pdMS_TO_TICKS(10000), pdFALSE, ( void * ) 0, TIMEOUT_RX_Callback);  // name,period-tick, autoreload,id, callback
    //UartSt[0].h_timeout_TX = xTimerCreate("TimeoutTX2", pdMS_TO_TICKS(10000), pdFALSE, ( void * ) 0, TIMEOUT_TX_Callback);  // name,period-tick, autoreload,id, callback
 
+   // Créer la queue de messages
+	in_message_queue = xQueueCreate(10, sizeof(in_message_t));
+	if (in_message_queue == NULL)
+	{
+	  LOG_ERROR("Failed to create in_message queue");
+	  return;
+	}
+
+
    raz_Uart(0);
 
 }
@@ -121,133 +135,151 @@ void init_communication(void)
 /**
 * @brief Function implementing the Uart1_Task thread.
 * @param argument: Not used
+ACSII : longueur n'inclut pas le car_fin_trame (inclus emetteur) : 4 pour RLTA (en fait 5)
+Binaire : RL1TA => lg=1 (en fait 5)
 * @retval None
 */
 void Uart_RX_Tsk(void *argument)
 {
-	uint8_t c, free;
-    HAL_StatusTypeDef status;
 
-    // Démarrer la surveillance watchdog pour cette tâche
-    watchdog_task_start(WATCHDOG_TASK_UART1);
-    LOG_INFO("Uart RX_Task started with watchdog protection");
+    // Démarrer la surveillance watchdog
+    watchdog_task_start(WATCHDOG_TASK_UART_RX);
+    LOG_INFO("Uart_RX_Task started with watchdog protection");
 
-	memset(Uart2_rx_buff, 0, sizeof(Uart2_rx_buff));
+    for(;;)
+    {
+        // Heartbeat watchdog
+        watchdog_task_heartbeat(WATCHDOG_TASK_UART_RX);
 
-    osDelay(1000);
+        // Lire un caractère
+		uint8_t status = HAL_UART_Receive(&huart2, &rx_char, 1, 100);
+        if (status == HAL_OK)
+        {
+        	car_valid=1;
+   		  //LOG_INFO("Received: 0x%02X ('%c')", rx_char, (rx_char >= 32 && rx_char <= 126) ? rx_char : '.');
 
-	for(;;)
-	{
-		// Enregistrer un heartbeat pour le watchdog
-		watchdog_task_heartbeat(WATCHDOG_TASK_UART1);
+            // Premier caractère : déterminer le type
 
-		// Lire depuis UART1
-		status = HAL_UART_Receive(&huart2, &c, 1, 1000);
+            if (buffer_index == 0)
+            {
+                // Vérifier le bit de poids fort
+                if (rx_char & 0x80)
+                {
+                	if ((rx_char==13) || (rx_char==10) || (!rx_char)) car_valid=0;  // pas CR ou LF en premier car
+                    message_type = 1;  // Message binaire
+                    LOG_DEBUG("Binary message detected");
+                }
+                else
+                {
+                    message_type = 0;  // Message ASCII
+                    LOG_DEBUG("ASCII message detected");
+                }
+            }
 
-		if (status == HAL_OK)
-		{
-		  LOG_INFO("Received: 0x%02X ('%c')", c, (c >= 32 && c <= 126) ? c : '.');
+            // Ajouter au buffer
+            if ((buffer_index < sizeof(mess_rx_uart.data) - 2) && (car_valid))
+            {
+            	mess_rx_uart.data[buffer_index++] = rx_char;
+   			    xTimerReset(UartSt[0].h_timeout_RX, 0); // timeout au bout de x secondes si on ne recoit pas la fin du message
 
-		  // Calcul du nb de places dispo dans le buffer (en laisser au moins 1)
-		  if (Uart2_rx_head < Uart2_rx_tail)
-			   free =  Uart2_rx_tail - Uart2_rx_head ;
-		  else
-			   free = (MESS_LG_MAX+20) - Uart2_rx_head + Uart2_rx_tail;
-
-		  if (free < (2) )
-		  {
-			 code_erreur = erreur_RX_full;   // Rx_buffer full
-			 //suppression message et attente jusqu'a la fin de ce message
-			 Uart2_rx_head = Uart2_rx_debut_trame;
-			 Uart2_rx_attente=1;
-			 //raz_Uart(0);
-		  }
-		  if ((( (c&0x7F)>0x1F ) && ((c&0x7F) < 0x7B)) || (Uart2_rx_nb_car_recu))   // ne prend pas 0x0A ni 0xFF en premier caractere
-		  {
-			  uint8_t debu_rx = Uart2_rx_head;
-			  if (!Uart2_rx_attente)
-			  {
-				  Uart2_rx_buff[Uart2_rx_head++] = c; /* copy over this byte of data dans le buffer */
-				  if( Uart2_rx_head == (MESS_LG_MAX+20) ) /* if wrapping around */
-					   Uart2_rx_head = 0; /* reset pointer */
-			  }
-			  Uart2_rx_nb_car_recu ++;
-			  xTimerReset(UartSt[0].h_timeout_RX, 0); // timeout au bout de x secondes si on ne recoit pas la fin du message
-			  if (Uart2_rx_nb_car_recu==1)
-			  {
-				  Uart2_rx_debut_trame = debu_rx;
-				  #ifdef DEBUG_TIME
-					  etat_cpu[index_time] = 0x31;  // phase reception courte  TODO
-					  etat_detail[index_time] = 0;
-					  time_cpu[index_time++] = Clock_getTicks(); // 1 tick = 10 micro-second  A supprimer
-					  if (index_time >MAX_Index) index_time=0;
-				  #endif
-				  Uart2_rx_type_trame = c & 0x80;  // enregistre le type de trame (hexa ou texte)
-				  Uart2_rx_longu = 10;
-			  }
-			 #ifdef UART_AJOUT_EMETTEUR
+				#ifdef UART_AJOUT_EMETTEUR
 				  if (Uart2_rx_nb_car_recu==2)
 					  Uart2_rx_longu = (c & 0x7F) - 1;   // enregistre la longueur de trame pour message hexa
-			 #else
-				  if (Uart2_rx_nb_car_recu==3)
-					  Uart2_rx_longu = c & 0x7F;   // enregistre la longueur de trame pour message hexa
-			  #endif
-			  // Fin de trame
-			  if (Uart2_rx_type_trame)
-			  {
-				  // Trame hexa
-				 if (Uart2_rx_nb_car_recu >= (Uart2_rx_longu+4))
-				 {
-				  #ifdef DEBUG_TIME
-					 etat_cpu[index_time] = 0x32;  // phase reception courte  TODO
-					 etat_detail[index_time] = Uart2_rx_nb_car_recu;
-					 time_cpu[index_time++] = Clock_getTicks(); // 1 tick = 10 micro-second  A supprimer
-					 if (index_time >MAX_Index) index_time=0;
-				  #endif
-					 Uart2_rx_nb_car_recu = 0;   // A REVOIR
-					 xTimerStop(UartSt[0].h_timeout_RX, 0);  // raz timeout
-					 if (!Uart2_rx_attente)
-					 {
-						 flag_trame_rx_Uart2++;  // nb de car recu => flag pour fin de trame
-			                LOG_INFO("Message complet: %s", Uart2_rx_buff);
+				#endif
+                // Traitement selon le type
+                if (message_type == 0)
+                {
+	  	  	  	  	// Message ASCII : fin par '\0'
+                    if ((rx_char == '\0') || (rx_char == 13))
+                    {
+                        // Message ASCII terminé
+   					    xTimerStop(UartSt[0].h_timeout_RX, 0);  // raz timeout
+   					    mess_rx_uart.length = buffer_index;
+   					    mess_rx_uart.type = 0; // ASCII
+   					    mess_rx_uart.source = 2; // UART2
+                        //mess_rx_uart.timestamp = HAL_GetTick();
 
-			                // Envoyer événement
+   					    if (rx_char==13)  // ajoute le 0
+   					    {
+   					    	mess_rx_uart.data[buffer_index++] = 0;
+   	   					    mess_rx_uart.length++;
+
+   					    }
+                        LOG_INFO("%s lg:%d",mess_rx_uart.data, mess_rx_uart.length );
+                        // Envoyer à la queue
+                        if (xQueueSend(in_message_queue, &mess_rx_uart, 0) != pdPASS)
+                        {
+                            code_erreur = erreur_RX_queue;
+                            LOG_ERROR("UART message queue full");
+                        }
+                        else
+                        {  // envoi de l'evenement a la tache appli
 			                event_t evt = {EVENT_UART_RX, SOURCE_UART, 0};
-			                osMessageQueuePut(Event_QueueHandle, &evt, 0, 0);
-					 }
-					 Uart2_rx_attente = 0;
-				 }
-			  }
-			  else   // Trame texte
-			  {
-				 if ((c == car_fin_trame) || (c == 0xA))  // fin de trame => flag pour reception trame
-				 {
-				  #ifdef DEBUG_TIME
-					 etat_cpu[index_time] = 0x32;  // phase reception courte  TODO
-					 etat_detail[index_time] = Uart2_rx_nb_car_recu;
-					 time_cpu[index_time++] = Clock_getTicks(); // 1 tick = 10 micro-second  A supprimer
-					 if (index_time >MAX_Index) index_time=0;
-				  #endif
+			                if (xQueueSend(Event_QueueHandle, &evt, 0) != pdPASS)
+	                            code_erreur = erreur_queue_appli;
+                        }
+                        // Réinitialiser
+                        buffer_index = 0;
+                        expected_length = 0;
+                    }
+                }
+                else
+                {
+                    // Message binaire : longueur dans le 3ème octet
+                    if (buffer_index == 3)
+                    {
+                        expected_length = mess_rx_uart.data[2]; // 3ème octet = longueur
+                        LOG_DEBUG("Binary message length: %d", expected_length);
+                        if ((expected_length <3) || (expected_length>(MESS_LG_MAX+3)))
+                        {
+                        	code_erreur=erreur_rx_uart_bin;
+                        	err_donnee1 = 1;
+                        	err_donnee2 = expected_length;
+                            buffer_index = 0;
+                        }
+                    }
 
-					 Uart2_rx_nb_car_recu = 0;
-					 xTimerStop(UartSt[0].h_timeout_RX, 0);  // raz timeout
-					 if (!Uart2_rx_attente)
-					 {
-						flag_trame_rx_Uart2++;
-		                LOG_INFO("Message complet: %s", Uart2_rx_buff);
+                    // Vérifier si on a reçu toute la longueur
+                    if (buffer_index >= 3 && buffer_index >= expected_length + 3)
+                    {
+                        // Message binaire terminé
+   					    xTimerStop(UartSt[0].h_timeout_RX, 0);  // raz timeout
+   					    mess_rx_uart.length = buffer_index;
+   					    mess_rx_uart.type = 1; // Binaire
+   					    mess_rx_uart.source = 2; // UART2
+                        //message.timestamp = HAL_GetTick();
 
-		                // Envoyer événement
-		                event_t evt = {EVENT_UART_RX, SOURCE_UART, 0};
-		                osMessageQueuePut(Event_QueueHandle, &evt, 0, 0);
-					 }
-					 Uart2_rx_attente = 0;
-				 }
-			  }
-		  }
+                        // Envoyer à la queue
+                        if (xQueueSend(in_message_queue, &mess_rx_uart, 0) != pdPASS)
+                        {
+                            LOG_ERROR("uartin_message queue full");
+                        }
+                        else
+                        {  // envoi de l'evenement a la tache appli
+			                event_t evt = {EVENT_UART_RX, SOURCE_UART, 0};
+			                if (xQueueSend(Event_QueueHandle, &evt, 0) != pdPASS)
+	                            code_erreur = erreur_queue_appli;
+                        }
 
-		} else if (status == HAL_TIMEOUT) {
+                        // Réinitialiser
+                        buffer_index = 0;
+                        expected_length = 0;
+                    }
+                }
+            }
+            else
+            {
+                // Buffer plein, réinitialiser
+            	code_erreur = erreur_RX_full;
+            	LOG_WARNING("UART buffer overflow, resetting");
+                buffer_index = 0;
+                expected_length = 0;
+            }
+		}
+        else if (status == HAL_TIMEOUT) {
 		    //LOG_WARNING("UART timeout - no data received");
-		} else {
+		}
+        else {
 		    LOG_ERROR("UART receive error: %d", status);
 		    osDelay(100);
 		}
@@ -259,187 +291,35 @@ void Uart_RX_Tsk(void *argument)
 }
 
 // Tache appli : TODO attendre que message_in soit libre (CC:30us) ou mettre en queue
-void reception_message_Uart2(void)
+void reception_message_Uart2(in_message_t *msg)
 {
-    uint8_t long_mess, retc;
+	if (msg->type == 0)
+	{
+		// Message ASCII
+		LOG_INFO("Received ASCII message: %.*s", msg->length, msg->data);
+	}
+	else
+	{
+		// Message binaire
+		LOG_INFO("Received binary message, length: %d", msg->length);
+		LOG_DEBUG("Binary data: ");
+		for (int i = 0; i < msg->length; i++)
+		{
+			LOG_DEBUG("%02X ", msg->data[i]);
+		}
+	}
 
-    if (flag_trame_rx_Uart2)
-    {            // Reception message Uart2
-        do
-        {
-          #ifdef DEBUG_TIME
-            etat_cpu[index_time] = 0x33;  // phase reception courte  TODO
-            etat_detail[index_time] = 0;
-            time_cpu[index_time++] = Clock_getTicks(); // 1 tick = 10 micro-second  A supprimer
-            if (index_time >MAX_Index) index_time=0;
-          #endif
-            //retc = SEMAPHORE_TAKE(MessageInSemHandle, 20); //   20 ms (correspondant a 1 message de 100 car 50kbps)
-            retc=1;
-
-          #ifdef DEBUG_TIME
-            etat_cpu[index_time] = 0x34;  // phase reception courte  TODO
-            etat_detail[index_time] = 0;
-            time_cpu[index_time++] = Clock_getTicks(); // 1 tick = 10 micro-second  A supprimer
-            if (index_time >MAX_Index) index_time=0;
-          #endif
-
-            if (retc)  // 1:ok
-            {
-                long_mess = Uart2_receive (message_in, 1); // QLHLH -> 5  QL1HLH->5
-                if (long_mess) {
-                    #ifdef NODE
-                        Mess_statut = 0x00;  // 22:Ack/RX apres - bit1-2:reenvoi(00:non, 01:1 fois, 10:x fois) bit3:diffï¿½rï¿½   bit4:pas d'ack  bit5:RX apres
-                    #endif
-                    //ESP_LOGW(TAG, "\nmessage recu:%i %s\n", long_mess, message_in);
-                    traitement_rx(long_mess);
-                }
-                #ifdef DEBUG_TIME
-                etat_cpu[index_time] = 0x35;  // phase reception courte  TODO
-                etat_detail[index_time] = 0;
-                time_cpu[index_time++] = Clock_getTicks(); // 1 tick = 10 micro-second  A supprimer
-                if (index_time >MAX_Index) index_time=0;
-                #endif
-
-                //SEMAPHORE_GIVE( MessageInSemHandle);
-            }
-            else // suppression message
-            {
-                Uart2_receive (message_in, 0);
-                code_erreur = erreur_messageIn;
-                err_donnee1 = '1';
-            }
-        }
-        while ((Uart2_rx_tail != Uart2_rx_head ) && (flag_trame_rx_Uart2));
-   }
+	// Appeler votre fonction de traitement existante
+	traitement_rx(msg->data, msg->length);
 }
 
-//type : 1:reel  0:factice
-uint8_t Uart2_receive (uint8_t* data, uint8_t type)
-// Transfert message de la pile Uart2_rx_buff vers message_in  PZZx  => 3
-// retourne : longueur (sans car fin, avec emetteur)
-{
-  uint8_t c, count, type_trame, i1,longueur_message;
-  #ifdef C10_CAMERA_PIR   // Uart reorientation messages
-    uint8_t destin;
-  #endif
 
-  count = 0;
-  /* if the buffer is empty  */
-  if( Uart2_rx_tail == Uart2_rx_head ) code_erreur = erreur_RX_buff_vide;
-  else
-  {
-      type_trame = Uart2_rx_buff[Uart2_rx_tail] & 0x80;
-      i1=1;
-      longueur_message=10;
-      do /* retrieve the frame/data from the buffer */
-      {
-         c = Uart2_rx_buff[Uart2_rx_tail++]; /* copy data from buffer */
-         if( Uart2_rx_tail == (MESS_LG_MAX+20) )
-             Uart2_rx_tail = 0;   /* if wrapping around  reset pointer */
-         if(count == 2)
-             longueur_message = ( c & 0x7F) + 3;
-         if (type_trame)
-          {
-            if (count >= longueur_message) i1=0;
-          }
-          else
-          {
-            if ((c==car_fin_trame) || (c==0xA))
-            {
-                i1=0;
-                c = car_fin_trame;
-            }
-          }
-          count++;
-          if (count > MESS_LG_MAX )
-          {
-            code_erreur = erreur_RX_pas_fin;  // erreur : pas de fin, ca boucle
-            i1=0;
-            c = car_fin_trame;
-          }
-          if (count==1)  // Premier caractere : destinataire
-          {
-              if ((c & 0x7F)=='1')  // destinataire 1 => my_adress  1yyy -> Xyyy
-                  c= My_Address + (c & 0x80);
-          }
-          #ifdef UART_AJOUT_EMETTEUR
-            if (count==2)  // 2Â°car : ajout emetteur 1yyy->X1yyy   Xyyy->X1yyy   Qyyy->QXyyy
-            {
-               /* if ((UART_AJOUT_EMETTEUR=='1') && (((message_in[0] & 0x7F) != My_Address) && ((message_in[0] & 0x7F) !='1')))
-                    *data++ = My_Address | 0x80; //
-                else*/
-                    *data++ = UART_AJOUT_EMETTEUR;
-                count++;
-            }
-          #endif
-
-            #ifdef C10_CAMERA_PIR   // Uart reorientation messages
-            //  reception uart:reoriente vers L des messages de l'ESP32 qui commencent par 1B et 5B
-            if (count == 1)
-                  destin = c & 0x7F;
-            if (count == 2)  //
-            {
-                if ( c != '1' )   // message warning ou erreur de l'ESP32
-                {
-                    if (type)
-                    {
-                        *data = My_Address;  // L My C1 C2
-                        data--;
-                        uint8_t temp = *data;
-                        *data = 'L';
-                        data = data + 2;
-                        *data++ = temp;
-                        count = count+2;
-                    }
-                }
-                else  // message normal : Remplace emetteur par My_address+0x80 quand ca vient du port serie
-                {
-                    if (destin == 'L')   // Permet d'avoir un message lisible pour L
-                        c = My_Address | 0x80;
-                    else if (destin != My_Address)
-                        c = My_Address | 0x80;
-                }
-            }
-          #endif
-          if (type)
-              *data++ = c;
-        } while ( i1 );
-  }
-
-
-/*  if (message_test[1])  // TODO
-  {
-      message_test[2]++;
-      if ((message_in[0]==0xCC) && (message_in[1]==0xE1)  && (message_in[3]=='Y'))
-      {
-          if ( (message_in[4]==1))
-          {
-              if ((message_in[2]!=0x67) || (count !=107))
-                  test_err(2);
-          }
-          if ( (message_in[4]==2))
-              message_test[1]=0;
-      }
-      else
-          test_err(3);
-  }*/
-
-
-   if (flag_trame_rx_Uart2) flag_trame_rx_Uart2-- ;  // BSP_CRITICAL_STATEMENT
-  if (count) count--;
-  return count; /* indicate the number of bytes retrieved from the buffer, sans car fin trame */
-}
 
 
 void raz_Uart(uint8_t num_uart)  // raz car en reception (suite timeout)
 {
-   Uart2_rx_attente=0;
-   Uart2_rx_head=0;
-   Uart2_rx_tail=0;
-   Uart2_rx_nb_car_recu = 0;
-   Uart2_rx_longu = 0;
+   buffer_index = 0;
    xTimerStop(UartSt[0].h_timeout_RX, 0);  // raz timeout RX
-   flag_trame_rx_Uart2 = 0;
 }
 
 
@@ -515,7 +395,7 @@ uint8_t envoie_mess_bin(const uint8_t *buf)
 }
 
 // utilise la table de routage pour envoyer le message
-uint8_t envoie_routage(const uint8_t *mess, uint8_t len)  // envoi du message
+uint8_t envoie_routage( uint8_t *mess, uint8_t len)  // envoi du message
 {
 	uint8_t destinataire, i, j, retc;
 	retc=1;
@@ -527,9 +407,8 @@ uint8_t envoie_routage(const uint8_t *mess, uint8_t len)  // envoi du message
 	{
 	    if (len < MESS_LG_MAX -1)
 	    {
-	        memcpy (message_in, message, len + 1);
 	        //message_in[0] = '0' + message[0] & 0x80;  // emetteur=loop
-	        traitement_rx (len);
+	        traitement_rx (mess, len);
 	        retc=0;
 	    }
 	}
@@ -758,50 +637,58 @@ HAL_StatusTypeDef send_lora_message(const char* message, uint8_t message_length,
  */
 void print_log(uint8_t level, const char* format, ...)
 {
+
     // Vérifier si le niveau est suffisant pour afficher
     if (level > current_log_level) {
         return;
     }
 
-    // Préfixe selon le niveau
-    const char* prefix;
-    switch (level) {
-        case LOG_LEVEL_ERROR:
-            prefix = "[ERROR] ";
-            break;
-        case LOG_LEVEL_WARNING:
-            prefix = "[WARN]  ";
-            break;
-        case LOG_LEVEL_INFO:
-            prefix = "[INFO]  ";
-            break;
-        case LOG_LEVEL_DEBUG:
-            prefix = "[DEBUG] ";
-            break;
-        case LOG_LEVEL_VERBOSE:
-            prefix = "[VERB]  ";
-            break;
-        default:
-            prefix = "[LOG]   ";
-            break;
+    if (xSemaphoreTake(log_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+            return; // Échec d'acquisition du mutex
+        }
+    else
+    {
+		// Préfixe selon le niveau
+		const char* prefix;
+		switch (level) {
+			case LOG_LEVEL_ERROR:
+				prefix = "[ERROR] ";
+				break;
+			case LOG_LEVEL_WARNING:
+				prefix = "[WARN]  ";
+				break;
+			case LOG_LEVEL_INFO:
+				prefix = "[INFO]  ";
+				break;
+			case LOG_LEVEL_DEBUG:
+				prefix = "[DEBUG] ";
+				break;
+			case LOG_LEVEL_VERBOSE:
+				prefix = "[VERB]  ";
+				break;
+			default:
+				prefix = "[LOG]   ";
+				break;
+		}
+
+		// Ajouter le préfixe
+		log_buffer[0] = dest_log;
+		strcpy((char*)log_buffer+1, prefix);
+
+		// Formatage des arguments
+		va_list args;
+		va_start(args, format);
+		vsnprintf((char*)log_buffer + strlen(prefix)+1, sizeof(log_buffer) - strlen(prefix) - 3, format, args);
+		va_end(args);
+
+		// Ajouter un retour à la ligne
+		strcat((char*)log_buffer, "\r\n");
+
+		// Envoyer via UART
+		//HAL_UART_Transmit(&huart2, (uint8_t*)log_buffer, strlen(log_buffer), 3000);
+		envoie_mess_ASC("%s", log_buffer);
+	    xSemaphoreGive(log_mutex);
     }
-
-    // Ajouter le préfixe
-    log_buffer[0] = dest_log;
-    strcpy(log_buffer+1, prefix);
-
-    // Formatage des arguments
-    va_list args;
-    va_start(args, format);
-    vsnprintf(log_buffer + strlen(prefix), sizeof(log_buffer) - strlen(prefix) - 1, format, args);
-    va_end(args);
-
-    // Ajouter un retour à la ligne
-    strcat(log_buffer, "\r\n");
-
-    // Envoyer via UART
-    //HAL_UART_Transmit(&huart2, (uint8_t*)log_buffer, strlen(log_buffer), 3000);
-    envoie_mess_ASC("%s", log_buffer);
 }
 
 /**
@@ -825,18 +712,14 @@ uint8_t get_log_level(void)
     return current_log_level;
 }
 
-void traitement_rx (char unsigned longueur_m) // var :longueur n'inclut pas le car_fin_trame (inclus emetteur) : 4 pour RLT1
+void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'inclut pas le car_fin_trame (inclus emetteur) : 4 pour RLT1
 {       // def :longueur n'inclut pas la longueur (inclus l'emetteur) : 4 pour RL1T1
   uint8_t a,  crc, long_def;//, emet_m;
   //uint8_t tempo1, tempo2, tempo3, tempo4;
   //unsigned char volatile   * pregistre_xdata;  // pointeur vers Memory (ROM, RAM, EEprom, registres)
   //unsigned int volatile    * pregistre_int_xdata;  // pointeur vers Memory (ROM, RAM, EEprom, registres)
   //uint32_t i32;
-  mess_ok=0;
 
-  //char unsigned cpuSR;  // uint8_t
-
-  flag_comm_transfert=0;
   //raz_timer_sleep ();
   message[0] = message_in[1]; // emetteur devient le destinataire du futur message
   //emet_m = message[0];
@@ -887,7 +770,6 @@ void traitement_rx (char unsigned longueur_m) // var :longueur n'inclut pas le c
           #endif
           {
               memcpy (message, message_in, longueur_m + 1);
-              flag_comm_transfert=1;
               envoie_routage (message, longueur_m);  // envoi du message
           }
       }
