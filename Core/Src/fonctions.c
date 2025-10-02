@@ -16,7 +16,7 @@
 
 // === SYSTÈME DE WATCHDOG ===
 // Tableau de suivi des tâches
-static watchdog_task_info_t watchdog_tasks[WATCHDOG_TASK_COUNT];
+static watchdog_task_info_t watchdog_tasks[WATCHDOG_TASK_NB];
 
 #define nb_erreurs_enregistrees  20
 #define nb_erreurs_envoyees      30
@@ -34,10 +34,25 @@ uint8_t nb_reset=0;
 
 extern UART_HandleTypeDef huart2;
 extern QueueHandle_t Event_QueueHandle;
+extern osThreadId_t defaultTaskHandle;
 extern osThreadId_t Appli_TaskHandle;
 extern osThreadId_t LORA_TX_TaskHandle;
 extern osThreadId_t LORA_RX_TaskHandle;
 extern osThreadId_t Uart_RX_TaskHandle;
+extern osThreadId_t Uart_TX_TaskHandle;
+
+
+// Fonctions pour gérer le contexte
+void watchdog_set_timeout(watchdog_task_id_t task_id, uint32_t timeout_ms);
+
+static const char* watchdog_task_names[WATCHDOG_TASK_NB] = {
+    "Default_Tsk",      // WATCHDOG_TASK_DEFAULT = 0
+    "LORA_RX_Tsk",      // WATCHDOG_TASK_LORA_RX = 1
+    "LORA_TX_Tsk",      // WATCHDOG_TASK_LORA_TX = 2
+    "Appli___Tsk",      // WATCHDOG_TASK_APPLI = 3
+    "Uart_RX_Tsk",      // WATCHDOG_TASK_UART_RX = 4
+    "Uart_TX_Tsk"       // WATCHDOG_TASK_UART_TX = 5
+};
 
 // Timers
 TimerHandle_t HTimer_24h;
@@ -75,6 +90,7 @@ void init_functions(void)
 
 	// Initialisation du système de watchdog
 	watchdog_init();
+
 }
 
 
@@ -125,27 +141,31 @@ void check_stack_usage(void)
     UBaseType_t stack_high_water_mark;
 
     // Vérifier chaque tâche
-    LOG_INFO("=== STACK USAGE REPORT ===");
+    //LOG_INFO("=== STACK USAGE REPORT ===");
+
+    // default_Task
+    stack_high_water_mark = uxTaskGetStackHighWaterMark(defaultTaskHandle);
+    LOG_INFO("Default_Task: %i free", (uint16_t) stack_high_water_mark);
 
     // Appli_Task
     stack_high_water_mark = uxTaskGetStackHighWaterMark(Appli_TaskHandle);
-    LOG_INFO("Appli_Task: %lu bytes free", stack_high_water_mark);
+    LOG_INFO("Appli_Task: %i free", stack_high_water_mark);
 
     // LORA_TX_Task
     stack_high_water_mark = uxTaskGetStackHighWaterMark(LORA_TX_TaskHandle);
-    LOG_INFO("LORA_TX_Task: %lu bytes free", stack_high_water_mark);
+    LOG_INFO("LORA_TX_Task: %i free", stack_high_water_mark);
 
     // LORA_RX_Task
     stack_high_water_mark = uxTaskGetStackHighWaterMark(LORA_RX_TaskHandle);
-    LOG_INFO("LORA_RX_Task: %lu bytes free", stack_high_water_mark);
+    LOG_INFO("LORA_RX_Task: %i free", stack_high_water_mark);
 
     // Uart_TX_Task
     stack_high_water_mark = uxTaskGetStackHighWaterMark(Uart_TX_TaskHandle);
-    LOG_INFO("Uart_TX_Task: %lu bytes free", stack_high_water_mark);
+    LOG_INFO("Uart_TX_Task: %i free", stack_high_water_mark);
 
     // Uart1_Task
     stack_high_water_mark = uxTaskGetStackHighWaterMark(Uart_RX_TaskHandle);
-    LOG_INFO("Uart_RX_Task: %lu bytes free", stack_high_water_mark);
+    LOG_INFO("Uart_RX_Task: %i free", stack_high_water_mark);
 
     //LOG_INFO("=== END STACK REPORT ===");
 }
@@ -245,11 +265,12 @@ void watchdog_init(void)
     LOG_INFO("Initializing watchdog system...");
 
     // Initialiser toutes les tâches comme inactives
-    for (int i = 0; i < WATCHDOG_TASK_COUNT; i++) {
+    for (int i = 0; i < WATCHDOG_TASK_NB; i++) {
         watchdog_tasks[i].last_heartbeat = 0;
         watchdog_tasks[i].timeout_ms = WATCHDOG_TIMEOUT_MS;
         watchdog_tasks[i].is_active = 0;
         watchdog_tasks[i].error_count = 0;
+        watchdog_tasks[i].context = WATCHDOG_CONTEXT_ACTIVE;  // Contexte par défaut
     }
 
     // Créer le timer de vérification du watchdog
@@ -271,6 +292,48 @@ void watchdog_init(void)
 	#endif
 }
 
+void watchdog_set_context(watchdog_task_id_t task_id, watchdog_context_t context)
+{
+    if (task_id < WATCHDOG_TASK_NB) {
+        watchdog_tasks[task_id].context = context;
+
+        // Ajuster le timeout selon le contexte
+        switch (context) {
+            case WATCHDOG_CONTEXT_ACTIVE:
+                watchdog_tasks[task_id].timeout_ms = WATCHDOG_TIMEOUT_MS;  // 30s
+                break;
+            case WATCHDOG_CONTEXT_WAITING:
+            case WATCHDOG_CONTEXT_SLEEPING:
+            case WATCHDOG_CONTEXT_UART_RX_WAIT:
+                watchdog_tasks[task_id].timeout_ms = 0;  // Pas de surveillance
+                break;
+            case WATCHDOG_CONTEXT_BLOCKED:
+                watchdog_tasks[task_id].timeout_ms = 5000;  // 5s
+                break;
+            case WATCHDOG_CONTEXT_CRITICAL:
+                watchdog_tasks[task_id].timeout_ms = 10000;  // 10s
+                break;
+            case WATCHDOG_CONTEXT_UART_RX_ACTIVE:
+                watchdog_tasks[task_id].timeout_ms = 2000;  // 2s
+                break;
+        }
+
+        /*LOG_DEBUG("Task %s context set to %d, timeout: %u ms",
+                 watchdog_task_names[task_id], context,
+                 (unsigned int)watchdog_tasks[task_id].timeout_ms);*/
+    }
+}
+
+// Fonction pour définir un timeout personnalisé
+void watchdog_set_timeout(watchdog_task_id_t task_id, uint32_t timeout_ms)
+{
+    if (task_id < WATCHDOG_TASK_NB) {
+        watchdog_tasks[task_id].timeout_ms = timeout_ms;
+        LOG_DEBUG("Task %s timeout set to %u ms",
+                 watchdog_task_names[task_id], (unsigned int)timeout_ms);
+    }
+}
+
 /**
  * @brief Callback du timer de watchdog
  */
@@ -284,11 +347,11 @@ static void WatchdogTimerCallback(TimerHandle_t xTimer)
  */
 void watchdog_task_start(watchdog_task_id_t task_id)
 {
-    if (task_id < WATCHDOG_TASK_COUNT) {
+    if (task_id < WATCHDOG_TASK_NB) {
         watchdog_tasks[task_id].is_active = 1;
         watchdog_tasks[task_id].last_heartbeat = xTaskGetTickCount();
         watchdog_tasks[task_id].error_count = 0;
-        LOG_DEBUG("Watchdog started for task %d", task_id);
+        //LOG_DEBUG("Watchdog started for task %d", task_id);
     }
 }
 
@@ -297,7 +360,7 @@ void watchdog_task_start(watchdog_task_id_t task_id)
  */
 void watchdog_task_stop(watchdog_task_id_t task_id)
 {
-    if (task_id < WATCHDOG_TASK_COUNT) {
+    if (task_id < WATCHDOG_TASK_NB) {
         watchdog_tasks[task_id].is_active = 0;
         LOG_DEBUG("Watchdog stopped for task %d", task_id);
     }
@@ -308,7 +371,7 @@ void watchdog_task_stop(watchdog_task_id_t task_id)
  */
 void watchdog_task_heartbeat(watchdog_task_id_t task_id)
 {
-    if (task_id < WATCHDOG_TASK_COUNT && watchdog_tasks[task_id].is_active) {
+    if (task_id < WATCHDOG_TASK_NB && watchdog_tasks[task_id].is_active) {
         watchdog_tasks[task_id].last_heartbeat = xTaskGetTickCount();
         watchdog_tasks[task_id].error_count = 0; // Reset du compteur d'erreurs
     }
@@ -319,7 +382,7 @@ void watchdog_task_heartbeat(watchdog_task_id_t task_id)
  */
 uint8_t watchdog_is_task_alive(watchdog_task_id_t task_id)
 {
-    if (task_id >= WATCHDOG_TASK_COUNT || !watchdog_tasks[task_id].is_active) {
+    if (task_id >= WATCHDOG_TASK_NB || !watchdog_tasks[task_id].is_active) {
         return 1; // Tâche non surveillée ou inactive = considérée comme vivante
     }
 
@@ -337,25 +400,43 @@ void watchdog_check_all_tasks(void)
     uint32_t current_time = xTaskGetTickCount();
     uint8_t critical_errors = 0;
 
-    for (int i = 0; i < WATCHDOG_TASK_COUNT; i++) {
+    for (int i = 0; i < WATCHDOG_TASK_NB; i++) {
         if (!watchdog_tasks[i].is_active) {
             continue; // Tâche non surveillée
+        }
+
+        // Si timeout = 0, pas de surveillance
+        if (watchdog_tasks[i].timeout_ms == 0) {
+            continue; // Tâche en attente/sommeil
         }
 
         uint32_t elapsed_ms = (current_time - watchdog_tasks[i].last_heartbeat) * 1000 / configTICK_RATE_HZ;
 
         if (elapsed_ms >= watchdog_tasks[i].timeout_ms) {
             watchdog_tasks[i].error_count++;
-            LOG_ERROR("Task %d timeout! Elapsed: %lu ms, Error count: %d",
-                     i, elapsed_ms, watchdog_tasks[i].error_count);
+
+            const char* context_name = "Unknown";
+            switch (watchdog_tasks[i].context) {
+                case WATCHDOG_CONTEXT_ACTIVE:   context_name = "Active"; break;
+                case WATCHDOG_CONTEXT_WAITING:   context_name = "Waiting"; break;
+                case WATCHDOG_CONTEXT_SLEEPING:  context_name = "Sleeping"; break;
+                case WATCHDOG_CONTEXT_BLOCKED:  context_name = "Blocked"; break;
+                case WATCHDOG_CONTEXT_CRITICAL:  context_name = "Critical"; break;
+                case WATCHDOG_CONTEXT_UART_RX_WAIT:  context_name = "UART_RX_Wait"; break;
+                case WATCHDOG_CONTEXT_UART_RX_ACTIVE: context_name = "UART_RX_Active"; break;
+            }
+
+            LOG_ERROR("%s timeout %s Elaps: %us, Err:%u",
+                     watchdog_task_names[i], context_name,
+                     (unsigned int)elapsed_ms/1000, watchdog_tasks[i].error_count);
 
             if (watchdog_tasks[i].error_count >= WATCHDOG_ERROR_THRESHOLD) {
-                LOG_ERROR("Task %d exceeded error threshold, system will reset!", i);
+                LOG_ERROR("Task %s exceeded threshold, system reset!",
+                         watchdog_task_names[i]);
                 critical_errors++;
             }
         }
     }
-
     // Si trop d'erreurs critiques, redémarrer le système
     if (critical_errors > 0) {
         watchdog_reset_system();
@@ -369,30 +450,42 @@ void watchdog_print_status(void)
 {
     LOG_INFO("=== WATCHDOG STATUS ===");
 
-    for (int i = 0; i < WATCHDOG_TASK_COUNT; i++) {
+    for (int i = 0; i < WATCHDOG_TASK_NB; i++) {
+        const char* task_name = watchdog_task_names[i];
+
         if (watchdog_tasks[i].is_active) {
             uint32_t current_time = xTaskGetTickCount();
             uint32_t elapsed_ms = (current_time - watchdog_tasks[i].last_heartbeat) * 1000 / configTICK_RATE_HZ;
 
-            LOG_INFO("Task %d: Active, Last heartbeat: %lu ms ago, Errors: %d",
-                    i, elapsed_ms, watchdog_tasks[i].error_count);
+            const char* context_name = "Unknown";
+            switch (watchdog_tasks[i].context) {
+                case WATCHDOG_CONTEXT_ACTIVE:   context_name = "Active"; break;
+                case WATCHDOG_CONTEXT_WAITING:   context_name = "Waiting"; break;
+                case WATCHDOG_CONTEXT_SLEEPING:  context_name = "Sleeping"; break;
+                case WATCHDOG_CONTEXT_BLOCKED:  context_name = "Blocked"; break;
+                case WATCHDOG_CONTEXT_CRITICAL:  context_name = "Critical"; break;
+                case WATCHDOG_CONTEXT_UART_RX_WAIT:  context_name = "UART_RX_Wait"; break;
+                case WATCHDOG_CONTEXT_UART_RX_ACTIVE: context_name = "UART_RX_Active"; break;
+            }
+
+            LOG_INFO("%s: %s, Last beat: %u ms, Err: %u",
+                    task_name, context_name, (unsigned int)elapsed_ms, watchdog_tasks[i].error_count);
         } else {
-            LOG_INFO("Task %d: Inactive", i);
+            LOG_INFO("%s: Inactive", task_name);
         }
     }
 
-    LOG_INFO("=== END WATCHDOG STATUS ===");
+    //LOG_INFO("=== END WATCHDOG STATUS ===");
 }
-
 /**
  * @brief Redémarre le système en cas d'erreur critique
  */
 void watchdog_reset_system(void)
 {
-    LOG_ERROR("WATCHDOG: Critical system failure detected, initiating reset...");
+    LOG_ERROR("WATCHDOG: Critic failure detect, reset...");
 
     // Envoyer un message d'erreur avant le reset
-    envoie_mess_ASC("WATCHDOG: System reset due to task failures");
+    //envoie_mess_ASC("WATCHDOG: System reset due to task failures");
 
     // Attendre un peu pour que le message soit envoyé
     osDelay(1000);
@@ -408,7 +501,7 @@ void watchdog_reset_system(void)
  */
 void watchdog_test_task_block(watchdog_task_id_t task_id, uint32_t duration_ms)
 {
-    LOG_WARNING("WATCHDOG TEST: Blocking task %d for %lu ms", task_id, duration_ms);
+    LOG_WARNING("WATCHDOG TEST: Block task %d for %lu ms", task_id, duration_ms);
 
     // Arrêter temporairement la surveillance de cette tâche
     watchdog_task_stop(task_id);
@@ -430,7 +523,7 @@ void watchdog_test_task_block(watchdog_task_id_t task_id, uint32_t duration_ms)
 void display_reset_cause(void)
 {
     // Charger les données de diagnostic de la session précédente
-    load_diagnostic_data();
+    //load_diagnostic_data();
 
     // Lire les flags de reset depuis RCC
     uint32_t reset_flags = RCC->CSR;
@@ -449,7 +542,7 @@ void display_reset_cause(void)
         LOG_INFO("Reset cause: Independent Watchdog (IWDG)");
     }
     if (reset_flags & RCC_CSR_SFTRSTF) {
-        LOG_INFO("Reset cause: Software Reset (NVIC_SystemReset)");
+        LOG_INFO("Reset cause: Soft Reset (NVIC_SystemReset)");
     }
     if (reset_flags & RCC_CSR_BORRSTF) {
         LOG_INFO("Reset cause: Brown On Reset (BOR)");
@@ -465,19 +558,19 @@ void display_reset_cause(void)
     if (!(reset_flags & (RCC_CSR_LPWRRSTF | RCC_CSR_WWDGRSTF | RCC_CSR_IWDGRSTF |
                          RCC_CSR_SFTRSTF | RCC_CSR_BORRSTF | RCC_CSR_PINRSTF |
                          RCC_CSR_OBLRSTF ))) {
-        LOG_WARNING("Reset cause: Unknown or multiple causes");
+        LOG_WARNING("Reset : Unknown/mult causes");
     }
 
     // Afficher le nombre de resets
     static uint32_t reset_count = 0;
     reset_count++;
-    LOG_INFO("Reset count since last power-on: %lu", reset_count);
+    LOG_INFO("Nb_Reset since last power: %lu", reset_count);
 
     // Afficher le temps d'uptime si disponible
     uint32_t uptime_ms = HAL_GetTick();
     LOG_INFO("System uptime: %lu ms", uptime_ms);
 
-    LOG_INFO("=== END RESET DIAGNOSTIC ===");
+    //LOG_INFO("=== END RESET DIAGNOSTIC ===");
 
     // Effacer les flags de reset pour le prochain démarrage
     __HAL_RCC_CLEAR_RESET_FLAGS();
@@ -551,7 +644,7 @@ void save_diagnostic_data(void)
     diag->watchdog_errors = watchdog_errors;
     diag->timestamp = HAL_GetTick();
 
-    LOG_DEBUG("Diagnostic data saved: reset_count=%lu, uptime=%lu ms",
+    LOG_DEBUG("Diag saved: reset_count=%lu, uptime=%lu ms",
               reset_count, diag->last_uptime_ms);
 }
 
@@ -572,7 +665,7 @@ void load_diagnostic_data(void)
         LOG_INFO("Last save timestamp: %lu ms", diag->timestamp);
         LOG_INFO("=== END PREVIOUS SESSION ===");
     } else {
-        LOG_INFO("No previous diagnostic data found (first boot)");
+        LOG_INFO("No previous diag data found (first boot)");
     }
 }
 

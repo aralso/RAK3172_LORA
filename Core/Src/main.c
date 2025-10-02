@@ -21,7 +21,7 @@
  mesure mode STOP, watchdog, adresses LORA/Uart
  clignot sorties, pwm,  antirebond 2 boutons, 2e uart
 
- v1.4 09/2025 : refonte reception uart
+ v1.4 09/2025 : fct : refonte reception uart, watchdog contextuel, traitement_rx
  v1.3 09/2025 : fct : augmentation stack taches, erreur_freertos
  v1.2 09/2025 : pile envoi uart, timer, code_erreur
  v1.1 09/2025 : STM32CubeMX + freertos+ subGhz+ Uart2+ RTC+ print_log+ event_queue
@@ -50,6 +50,9 @@
 
 extern TimerHandle_t HTimer_24h;
 extern TimerHandle_t HTimer_20min;
+extern osThreadId_t Uart_RX_TaskHandle;
+extern osThreadId_t Uart_TX_TaskHandle;
+
 
 HAL_StatusTypeDef configure_lse_oscillator(void);
 HAL_StatusTypeDef configure_lsi_oscillator(void);
@@ -78,28 +81,28 @@ osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
   .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 128 * 4
+  .stack_size = 256 * 4  // 188 utilisé  +180byte/tache
 };
 /* Definitions for LORA_RX_Task */
 osThreadId_t LORA_RX_TaskHandle;
 const osThreadAttr_t LORA_RX_Task_attributes = {
   .name = "LORA_RX_Task",
   .priority = (osPriority_t) osPriorityLow,
-  .stack_size = 256 * 4
+  .stack_size = 256 * 4    // 200 utilisé
 };
 /* Definitions for LORA_TX_Task */
 osThreadId_t LORA_TX_TaskHandle;
 const osThreadAttr_t LORA_TX_Task_attributes = {
   .name = "LORA_TX_Task",
   .priority = (osPriority_t) osPriorityLow4,
-  .stack_size = 256 * 4
+  .stack_size = 256 * 4    // 208 utilisé
 };
 /* Definitions for Appli_Task */
 osThreadId_t Appli_TaskHandle;
 const osThreadAttr_t Appli_Task_attributes = {
   .name = "Appli_Task",
-  .priority = (osPriority_t) osPriorityLow5,
-  .stack_size = 256 * 4
+  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 480 * 4   // 222 utilisé
 };
 
 /* USER CODE BEGIN PV */
@@ -165,7 +168,7 @@ int main(void)
   //LOG_INFO("=== RAK3172 LoRa System Started ===");
   //LOG_INFO("Log level: %d", get_log_level());
 
-  char init_msg[] = "-- RAK3172 Init. Log level:x";
+  char init_msg[] = "-- RAK3172 Init. Log level:x\r";
   init_msg[0] = dest_log;
   init_msg[1] = My_Address;
   init_msg[27] = get_log_level()+'0';
@@ -230,6 +233,16 @@ int main(void)
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
 
+  size_t freeHeap = xPortGetFreeHeapSize();
+  char msgL[50];
+  sprintf(msgL, "Free heap before tasks: %i bytes\r", freeHeap);
+  HAL_Delay(500);
+  HAL_UART_Transmit(&huart2, (uint8_t*)msgL, strlen(msgL), 3000);
+  HAL_Delay(500);
+
+  init_communication();
+  init_functions();
+
   /* Create the thread(s) */
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
@@ -243,10 +256,30 @@ int main(void)
   /* creation of Appli_Task */
   Appli_TaskHandle = osThreadNew(Appli_Tsk, NULL, &Appli_Task_attributes);
 
+  uint8_t code_err_tache=0;
+  if (defaultTaskHandle == NULL) code_err_tache=1;
+  if (LORA_RX_TaskHandle == NULL) code_err_tache|=2;
+  if (LORA_TX_TaskHandle == NULL) code_err_tache|=4;
+  if (Appli_TaskHandle == NULL) code_err_tache|=8;
+  if (Uart_RX_TaskHandle == NULL) code_err_tache|=16;
+  if (Uart_TX_TaskHandle == NULL) code_err_tache|=32;
+
+  if (code_err_tache) {
+	   HAL_Delay(500);
+	   sprintf(msgL, "erreur tache: %02X ", code_err_tache);
+	  HAL_UART_Transmit(&huart2, (uint8_t*)msgL, strlen(msgL), 3000);
+	   HAL_Delay(500);
+      //LOG_ERROR("Failed to create Appli_Task");
+      // La tâche n'a pas pu être créée
+  }
+  // Après la création :
+   freeHeap = xPortGetFreeHeapSize();
+  sprintf(msgL, "Free heap after tasks: %i bytes\r", freeHeap);
+  HAL_Delay(500);
+  HAL_UART_Transmit(&huart2, (uint8_t*)msgL, strlen(msgL), 3000);
+  HAL_Delay(500);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  init_communication();
-  init_functions();
 
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -257,6 +290,9 @@ int main(void)
 
   /* Start scheduler */
   osKernelStart();
+
+  //HAL_UART_Transmit(&huart2, (uint8_t*)"InitS", 5, 3000);
+  //HAL_Delay(500);
 
   /* We should never get here as control is now taken by the scheduler */
 
@@ -443,7 +479,7 @@ static void MX_SUBGHZ_Init(void)
   uint8_t lora_config[] = {0x72, 0x74, 0x00};
   HAL_SUBGHZ_WriteRegisters(&hsubghz, 0x1E, lora_config, 3);
 
-  LOG_INFO("SUBGHZ LoRa configured");
+  //LOG_INFO("SUBGHZ LoRa configured");
 
   /* USER CODE END SUBGHZ_Init 2 */
 
@@ -662,7 +698,7 @@ void StartDefaultTask(void *argument)
   // Démarrer la surveillance watchdog pour cette tâche
 	#ifdef WATCHDOG
 	  watchdog_task_start(WATCHDOG_TASK_DEFAULT);
-	  LOG_INFO("DefaultTask started with watchdog protection");
+	  //LOG_INFO("DefaultTask started with watchdog protection");
 	#endif
   
   uint32_t last_status_time = 0;
@@ -677,14 +713,17 @@ void StartDefaultTask(void *argument)
     uint32_t current_time = HAL_GetTick();
     
     // Afficher le statut du watchdog toutes les 30 secondes
-    if (current_time - last_status_time > 30000) {
-        watchdog_print_status();
+    if (current_time - last_status_time > 91000) {
+        //watchdog_print_status();
         last_status_time = current_time;
+        osDelay(3000); // Attendre 3 seconde
+		//check_stack_usage();
+
     }
     
     // Sauvegarder les données de diagnostic toutes les 60 secondes
     if (current_time - last_save_time > 60000) {
-        save_diagnostic_data();
+        //save_diagnostic_data();
         last_save_time = current_time;
     }
     HAL_IWDG_Refresh(&hiwdg);
@@ -707,7 +746,7 @@ void LORA_RXTsk(void *argument)
   /* USER CODE BEGIN LORA_RXTsk */
   // Démarrer la surveillance watchdog pour cette tâche
   watchdog_task_start(WATCHDOG_TASK_LORA_RX);
-  LOG_INFO("LoRa RX Task started with watchdog protection");
+  //LOG_INFO("LoRa RX Task started with watchdog protection");
   
   /* Infinite loop */
 	uint8_t rx_buffer[64];
@@ -761,7 +800,7 @@ void LORA_TXTsk(void *argument)
   /* USER CODE BEGIN LORA_TXTsk */
   // Démarrer la surveillance watchdog pour cette tâche
   watchdog_task_start(WATCHDOG_TASK_LORA_TX);
-  LOG_INFO("LoRa TX Task started with watchdog protection");
+  //LOG_INFO("LoRa TX Task started with watchdog protection");
   
   /* Infinite loop */
 
@@ -839,8 +878,14 @@ void Appli_Tsk(void *argument)
 {
   /* USER CODE BEGIN Appli_Tsk */
   // Démarrer la surveillance watchdog pour cette tâche
+	   //HAL_UART_Transmit(&huart2, (uint8_t*)"InitA", 5, 3000);
+	   //HAL_Delay(500);
+
   watchdog_task_start(WATCHDOG_TASK_APPLI);
-  LOG_INFO("Appli_Task started with watchdog protection");
+  //LOG_INFO("Appli_Task started with watchdog protection");
+
+  //HAL_UART_Transmit(&huart2, (uint8_t*)"InitB", 5, 3000);
+  //HAL_Delay(500);
 
     event_t evt;
     osStatus_t status;
@@ -850,8 +895,12 @@ void Appli_Tsk(void *argument)
         // Enregistrer un heartbeat pour le watchdog
         watchdog_task_heartbeat(WATCHDOG_TASK_APPLI);
         
+        watchdog_set_context(WATCHDOG_TASK_APPLI, WATCHDOG_CONTEXT_WAITING);
+
         // Attendre un événement (bloque tant qu'il n'y a rien)
         status = osMessageQueueGet(Event_QueueHandle, &evt, NULL, osWaitForever);
+
+        watchdog_set_context(WATCHDOG_TASK_APPLI, WATCHDOG_CONTEXT_ACTIVE);
 
         if (status == osOK)
         {
@@ -895,7 +944,7 @@ void Appli_Tsk(void *argument)
 				}
 
 				case EVENT_UART_RX: {
-					LOG_INFO("UART message received event");
+					//LOG_INFO("UART message received event");
 					in_message_t message_in;
 			        if (xQueueReceive(in_message_queue, &message_in, portMAX_DELAY) == pdPASS)
 			        {
@@ -964,7 +1013,7 @@ void Appli_Tsk(void *argument)
 					//LOG_INFO("a");
 					//LOG_INFO("TIMER 20s event");
 					//osDelay(1000);
-					check_stack_usage();
+					//check_stack_usage();
 					//uint8_t statut=envoie_mess_ASC("Message periodique 30s");
 					//if (statut) { code_erreur= code_erreur_envoi; err_donnee1=statut;}
 					//uint8_t statut=envoie_mess_ASC("PRS");
@@ -976,7 +1025,7 @@ void Appli_Tsk(void *argument)
 					//TickType_t expiry = xTimerGetExpiryTime(HTimer_20min);
 					//TickType_t now = xTaskGetTickCount();
 					osDelay(100);
-					//LOG_INFO("Il reste %lu ticks avant la prochaine expiration\n",
+					//LOG_INFO("Il reste %lu ticks avant la prochaine expir\n",
 					//	   (expiry > now) ? (expiry - now) : 0);
 					//osDelay(100);
 					break;

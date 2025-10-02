@@ -28,7 +28,10 @@ QueueHandle_t in_message_queue;  // queue pour les messages entrants
 // Timers
 TimerHandle_t timer_handles[2];
 
-static uint8_t log_buffer[MESS_LG_MAX];
+static uint8_t log_buffer[MESS_LG_MAX_LOG];
+static uint16_t len_ASC;
+static uint8_t mess_ASC[MESS_LG_MAX]; // Variable locale pour travailler
+static char formatted_buffer[MESS_LG_MAX]; // Buffer pour le formatage
 static SemaphoreHandle_t log_mutex = NULL;
 
 SUBGHZ_HandleTypeDef hsubghz;
@@ -49,6 +52,7 @@ uint8_t message[MESS_LG_MAX];
 extern UART_HandleTypeDef huart2;
 extern QueueHandle_t Event_QueueHandle;
 
+
 void Uart_RX_Tsk(void *argument);
 void Uart_TX_Tsk(void *argument);
 uint8_t Uart2_receive (uint8_t* data, uint8_t type);
@@ -59,7 +63,7 @@ osThreadId_t Uart_RX_TaskHandle;
 const osThreadAttr_t Uart_RX_Task_attributes = {
   .name = "Uart_RX_Task",
   .priority = (osPriority_t) osPriorityLow5,
-  .stack_size = 256 * 4
+  .stack_size = 256 * 4    // 190 utilisé
 };
 
 /* Definitions for Uart2_TX_Task */
@@ -67,7 +71,7 @@ osThreadId_t Uart_TX_TaskHandle;
 const osThreadAttr_t Uart_TX_Task_attributes = {
   .name = "Uart_TXTask",
   .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 256 * 4
+  .stack_size = 256 * 4    // 89 utilisé (+121 pour LOG)
 };
 
 
@@ -99,17 +103,24 @@ void TIMEOUT_RX_Callback(TimerHandle_t xTimer)
 
 void init_communication(void)
 {
+
+    // Créer la queue de messages
+ 	in_message_queue = xQueueCreate(10, sizeof(in_message_t));
+ 	/*if (in_message_queue == NULL)
+ 	{
+ 	  LOG_ERROR("Failed to create in_message queue");
+ 	  return;
+ 	}*/
+
+	// mutex pour envoyer les log
     log_mutex = xSemaphoreCreateMutex();
 
-   /* creation of Uart_RX_Task */
-   Uart_RX_TaskHandle = osThreadNew(Uart_RX_Tsk, NULL, &Uart_RX_Task_attributes);
-
-	// Initialisation du mutex
+	// Initialisation du mutex pour mettre enqueue
 	bufferMutex = osMutexNew(NULL);
-	if (bufferMutex == NULL) {
+	/*if (bufferMutex == NULL) {
 		LOG_ERROR("Failed to create bufferMutex");
 		return;
-	}
+	}*/
 	//LOG_INFO("bufferMutex created: %p", bufferMutex);
 
 	/* creation of Uart_TX_Task */
@@ -118,25 +129,22 @@ void init_communication(void)
    UartSt[0].h_timeout_RX = xTimerCreate("TimeoutRX2", pdMS_TO_TICKS(10000), pdFALSE, ( void * ) 0, TIMEOUT_RX_Callback);  // name,period-tick, autoreload,id, callback
    //UartSt[0].h_timeout_TX = xTimerCreate("TimeoutTX2", pdMS_TO_TICKS(10000), pdFALSE, ( void * ) 0, TIMEOUT_TX_Callback);  // name,period-tick, autoreload,id, callback
 
-   // Créer la queue de messages
-	in_message_queue = xQueueCreate(10, sizeof(in_message_t));
-	if (in_message_queue == NULL)
-	{
-	  LOG_ERROR("Failed to create in_message queue");
-	  return;
-	}
+   /* creation of Uart_RX_Task */
+   Uart_RX_TaskHandle = osThreadNew(Uart_RX_Tsk, NULL, &Uart_RX_Task_attributes);
 
 
    raz_Uart(0);
 
+   //HAL_UART_Transmit(&huart2, (uint8_t*)"Init2", 5, 3000);
+   //HAL_Delay(500);
 }
 
 
 /**
 * @brief Function implementing the Uart1_Task thread.
 * @param argument: Not used
-ACSII : longueur n'inclut pas le car_fin_trame (inclus emetteur) : 4 pour RLTA (en fait 5)
-Binaire : RL1TA => lg=1 (en fait 5)
+ACSII : longueur n'inclut pas le car_fin_trame (inclus emetteur) : 5 pour RLSLO (en fait 6)
+Binaire : RL2SLO => lg=2 (en fait 6)
 * @retval None
 */
 void Uart_RX_Tsk(void *argument)
@@ -144,7 +152,10 @@ void Uart_RX_Tsk(void *argument)
 
     // Démarrer la surveillance watchdog
     watchdog_task_start(WATCHDOG_TASK_UART_RX);
-    LOG_INFO("Uart_RX_Task started with watchdog protection");
+    //HAL_UART_Transmit(&huart2, (uint8_t*)"Init4", 5, 3000);
+    //HAL_Delay(500);
+
+    //LOG_INFO("Uart_RX_Task started with watchdog protection");
 
     for(;;)
     {
@@ -172,19 +183,23 @@ void Uart_RX_Tsk(void *argument)
                 else
                 {
                     message_type = 0;  // Message ASCII
-                    LOG_DEBUG("ASCII message detected");
+                    //LOG_DEBUG("ASCII message detected");
                 }
             }
 
             // Ajouter au buffer
             if ((buffer_index < sizeof(mess_rx_uart.data) - 2) && (car_valid))
             {
+   			    if ((buffer_index==0) && (rx_char=='1'))  rx_char=My_Address;  // remplacement de 1 par mon adresse
+
             	mess_rx_uart.data[buffer_index++] = rx_char;
    			    xTimerReset(UartSt[0].h_timeout_RX, 0); // timeout au bout de x secondes si on ne recoit pas la fin du message
 
 				#ifdef UART_AJOUT_EMETTEUR
-				  if (Uart2_rx_nb_car_recu==2)
-					  Uart2_rx_longu = (c & 0x7F) - 1;   // enregistre la longueur de trame pour message hexa
+				  if (buffer_index==1)
+				  {
+	            	mess_rx_uart.data[buffer_index++] = '1';
+				  }
 				#endif
                 // Traitement selon le type
                 if (message_type == 0)
@@ -199,24 +214,27 @@ void Uart_RX_Tsk(void *argument)
    					    mess_rx_uart.source = 2; // UART2
                         //mess_rx_uart.timestamp = HAL_GetTick();
 
-   					    if (rx_char==13)  // ajoute le 0
+   					    if (rx_char==13)  // remplace par 0
    					    {
-   					    	mess_rx_uart.data[buffer_index++] = 0;
-   	   					    mess_rx_uart.length++;
+   					    	mess_rx_uart.data[buffer_index-1] = 0;
 
    					    }
-                        LOG_INFO("%s lg:%d",mess_rx_uart.data, mess_rx_uart.length );
+                        //LOG_INFO("%s lg:%d",mess_rx_uart.data, mess_rx_uart.length-1 );
                         // Envoyer à la queue
-                        if (xQueueSend(in_message_queue, &mess_rx_uart, 0) != pdPASS)
+                        if (buffer_index>4)  // minimum xxSL
                         {
-                            code_erreur = erreur_RX_queue;
-                            LOG_ERROR("UART message queue full");
-                        }
-                        else
-                        {  // envoi de l'evenement a la tache appli
-			                event_t evt = {EVENT_UART_RX, SOURCE_UART, 0};
-			                if (xQueueSend(Event_QueueHandle, &evt, 0) != pdPASS)
-	                            code_erreur = erreur_queue_appli;
+                        	mess_rx_uart.length--;
+							if (xQueueSend(in_message_queue, &mess_rx_uart, 0) != pdPASS)
+							{
+								code_erreur = erreur_RX_queue;
+								LOG_ERROR("UART message queue full");
+							}
+							else
+							{  // envoi de l'evenement a la tache appli
+								event_t evt = {EVENT_UART_RX, SOURCE_UART, 0};
+								if (xQueueSend(Event_QueueHandle, &evt, 0) != pdPASS)
+									code_erreur = erreur_queue_appli;
+							}
                         }
                         // Réinitialiser
                         buffer_index = 0;
@@ -296,7 +314,8 @@ void reception_message_Uart2(in_message_t *msg)
 	if (msg->type == 0)
 	{
 		// Message ASCII
-		LOG_INFO("Received ASCII message: %.*s", msg->length, msg->data);
+		//LOG_INFO("Received ASCII message: %.*s", msg->length, msg->data);
+		//LOG_INFO("Received ASCII message: %s lg:%d", msg->data, msg->length);
 	}
 	else
 	{
@@ -326,9 +345,6 @@ void raz_Uart(uint8_t num_uart)  // raz car en reception (suite timeout)
 // PRS0 -> PURS0 (lg=5)
 uint8_t envoie_mess_ASC(const char* format, ...)
 {
-	uint16_t len;
-	uint8_t mess[MESS_LG_MAX]; // Variable locale pour travailler
-	char formatted_buffer[MESS_LG_MAX]; // Buffer pour le formatage
 
 	if (format == NULL) {
 		return 1; // Erreur : buffer nul
@@ -337,29 +353,29 @@ uint8_t envoie_mess_ASC(const char* format, ...)
 	// Formatage des arguments variables
 	va_list args;
 	va_start(args, format);
-	len = vsnprintf(formatted_buffer, sizeof(formatted_buffer) - 1, format, args);
+	len_ASC = vsnprintf(formatted_buffer, sizeof(formatted_buffer) - 1, format, args);
 	va_end(args);
 
 	// Vérifier si le formatage a réussi
-	if (len < 0) {
+	if (len_ASC < 0) {
 		return 3; // Erreur : formatage échoué
 	}
 
 
 	// Vérifier si len<3 ou la longueur dépasse la taille maximale
-	if ((len < 3) || ( (len+3) >= MESS_LG_MAX)) {
+	if ((len_ASC < 3) || ( (len_ASC+3) >= MESS_LG_MAX)) {
 		return 2; // Erreur : dépassement de buffer
 	}
 
 	// Copier buf dans mess
-	memcpy(mess+1, formatted_buffer, len + 1); // decalage & +1 pour inclure le '\0'
-	len += 2;
-	mess[0] = formatted_buffer[0];
-	mess[1] = My_Address;
+	memcpy(mess_ASC+1, formatted_buffer, len_ASC + 1); // decalage & +1 pour inclure le '\0'
+	len_ASC += 2;
+	mess_ASC[0] = formatted_buffer[0];
+	mess_ASC[1] = My_Address;
 
 
 	// Envoyer le message
-	uint8_t res = envoie_routage(mess, len);
+	uint8_t res = envoie_routage(mess_ASC, len_ASC);
 	//osDelay(100);
 	//LOG_INFO("enqueue:%i %s", len, mess);
     //osDelay(100);
@@ -552,7 +568,7 @@ void Uart_TX_Tsk(void *argument)
 
     // Démarrer la surveillance watchdog pour cette tâche
     watchdog_task_start(WATCHDOG_TASK_UART_TX);
-    LOG_INFO("Uart_TX_Task started with watchdog protection");
+    //LOG_INFO("Uart_TX_Task started with watchdog protection");
 
     for (;;)
     {
@@ -673,20 +689,24 @@ void print_log(uint8_t level, const char* format, ...)
 
 		// Ajouter le préfixe
 		log_buffer[0] = dest_log;
-		strcpy((char*)log_buffer+1, prefix);
+		log_buffer[1] = My_Address;
+		strcpy((char*)log_buffer+2, prefix);
 
 		// Formatage des arguments
 		va_list args;
 		va_start(args, format);
-		vsnprintf((char*)log_buffer + strlen(prefix)+1, sizeof(log_buffer) - strlen(prefix) - 3, format, args);
+		vsnprintf((char*)log_buffer + strlen(prefix)+2, sizeof(log_buffer) - strlen(prefix) - 4, format, args);
 		va_end(args);
 
 		// Ajouter un retour à la ligne
 		strcat((char*)log_buffer, "\r\n");
+		//len_ASC+=2;
 
 		// Envoyer via UART
 		//HAL_UART_Transmit(&huart2, (uint8_t*)log_buffer, strlen(log_buffer), 3000);
-		envoie_mess_ASC("%s", log_buffer);
+		//envoie_mess_ASC("%s", log_buffer);
+		len_ASC = strlen((char*)log_buffer);
+		envoie_routage(log_buffer, len_ASC);
 	    xSemaphoreGive(log_mutex);
     }
 }
@@ -873,11 +893,14 @@ void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'
               {
                   envoie_mess_ASC("1OKK");
               }
-              if ( (message_in[4] =='T') && (message_in[5] =='a') && (longueur_m==6))  // SLTa
-              {
+              if ( (message_in[4] =='T') && (message_in[5] =='a') && (longueur_m==6))  // SLTa  Stack des taches
   				 check_stack_usage();
-                 envoie_mess_ASC("1OKK");
-              }
+
+              if ( (message_in[4] =='W') && (message_in[5] =='a') && (longueur_m==6))  // SLWa  Watchdog etat
+            	  watchdog_print_status();
+
+              if ( (message_in[4] =='R') && (message_in[5] =='e') && (longueur_m==6))  // SLWa  Reset cause et diagnostic
+            	  display_reset_cause();
           }
       }
   }

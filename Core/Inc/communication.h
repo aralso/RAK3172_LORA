@@ -16,10 +16,18 @@
 #include "timers.h"
 #include "queue.h"
 
+#define END_NODE
+#define My_Address 'U'
+
+#define dest_erreur	'1'
+#define dest_log '1'
+#define UART_AJOUT_EMETTEUR
 
 
 #define MESS_BUFFER_SIZE 500
 #define MESS_LG_MAX	100
+#define MESS_LG_MAX_LOG	60
+
 
 // Niveaux de verbosité
 #define LOG_LEVEL_ERROR    1
@@ -28,7 +36,6 @@
 #define LOG_LEVEL_DEBUG    4
 #define LOG_LEVEL_VERBOSE  5
 
-#define TIMER_PERIOD_MS  7000   // 50s
 
 // Niveau de verbosité global (modifiable)
 #define CURRENT_LOG_LEVEL  LOG_LEVEL_DEBUG
@@ -55,8 +62,6 @@ extern uint8_t err_donnee1, err_donnee2;
 
 
 
-#define dest_erreur	'1'
-#define dest_log '1'
 
 #define NB_UART 1
 #define car_fin_trame 13
