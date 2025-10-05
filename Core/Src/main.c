@@ -21,7 +21,8 @@
  mesure mode STOP, watchdog, adresses LORA/Uart
  clignot sorties, pwm,  antirebond 2 boutons, 2e uart
 
- v1.4 09/2025 : fct : refonte reception uart, watchdog contextuel, traitement_rx
+ v1.5 10/2025 : eeprom et log_flash
+ v1.4 09/2025 : fct : refonte reception uart, watchdog contextuel, traitement_rx, opti stack
  v1.3 09/2025 : fct : augmentation stack taches, erreur_freertos
  v1.2 09/2025 : pile envoi uart, timer, code_erreur
  v1.1 09/2025 : STM32CubeMX + freertos+ subGhz+ Uart2+ RTC+ print_log+ event_queue
@@ -31,6 +32,8 @@
 /* Includes ------------------------------------------------------------------*/
 #include <communication.h>
 #include <fonctions.h>
+#include <eeprom_emul.h>
+#include <log_flash.h>
 #include "main.h"
 #include "cmsis_os.h"
 
@@ -242,6 +245,7 @@ int main(void)
 
   init_communication();
   init_functions();
+
 
   /* Create the thread(s) */
   /* creation of defaultTask */
@@ -889,6 +893,32 @@ void Appli_Tsk(void *argument)
 
     event_t evt;
     osStatus_t status;
+
+    osDelay(1000);
+
+    // Vérifier la configuration flash
+    //check_flash_config();
+    //check_flash_permissions();
+    //osDelay(1000);
+
+    // Initialiser l'EEPROM
+    if (log_init() == HAL_OK) {
+        LOG_INFO("LOG initialisee");
+
+        // Test simple
+    } else {
+        LOG_ERROR("Erreur LOG");
+    }
+    osDelay(1000);
+
+    /*if (EEPROM_Init() == HAL_OK) {
+        LOG_INFO("eeprom initialisee");
+        osDelay(1000);
+        // Test simple
+        test_eeprom_simple();
+    } else {
+        LOG_ERROR("Erreur eeprom");
+    }*/
 
     for(;;)
     {

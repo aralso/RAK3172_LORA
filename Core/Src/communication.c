@@ -7,6 +7,8 @@
 
 #include <communication.h>
 #include <fonctions.h>
+#include <eeprom_emul.h>
+#include <log_flash.h>
 #include "cmsis_os.h"
 #include "timers.h"
 #include "queue.h"
@@ -21,6 +23,11 @@ uint8_t table_routage[nb_ligne_routage][6] = {
     {'1', '1', 3, 0, 0, 0},
     {'2', 'z', 7, 'Q', 0, 0}
 };
+
+/* gestion des erreurs
+Code_erreur => utile dans les ISR, peut masquer les premieres erreurs simultanées, gestion des répétitions
+LOG_WARN(..) => envoie un message sur la sortie prédéfinie. message complet, limite 4/10min, pas ISR
+LOG en Flash => pb répétitions. Limiter à 4 / 10 minutes*/
 
 
 QueueHandle_t in_message_queue;  // queue pour les messages entrants
@@ -889,7 +896,7 @@ void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'
           }
           if ((message_in[2] == 'S') && (message_in[3] == 'L'))
           {
-              if ( (message_in[4] =='O')  && (longueur_m==5))  // SLO
+              if ( (message_in[4] =='O')  && (longueur_m==5))  // 1SLO
               {
                   envoie_mess_ASC("1OKK");
               }
@@ -902,7 +909,127 @@ void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'
               if ( (message_in[4] =='R') && (message_in[5] =='e') && (longueur_m==6))  // SLWa  Reset cause et diagnostic
             	  display_reset_cause();
           }
+          if ((message_in[2] == 'T') && (message_in[3] == 'E'))  // Test eeprom/log_flash
+          {
+			  if ( (message_in[4] =='E')  && (longueur_m==7))  // Ecriture eeprom  1TEE12
+			  {
+			     if (EEPROM_Write8(message_in[5]-'0', message_in[6]-'0') == HAL_OK) {
+				    LOG_INFO("EEPROM écrit");
+			     } else {
+				    LOG_ERROR("Erreur écriture EEPROM ");
+			     }
+			  }
+			  if ( (message_in[4] =='R')  && (longueur_m==6))  // Lecture eeprom  1TER1
+			  {
+				uint8_t value;
+				if (EEPROM_Read8(message_in[5]-'0', &value) == HAL_OK) {
+					LOG_INFO("EEPROM lu: adresse %d = 0x%02X", message_in[5]-'0', value);
+				} else {
+					LOG_ERROR("Erreur lecture EEPROM ");
+				}
+			  }
+			  if ( (message_in[4] =='L')  && (longueur_m==7))  // Ecriture LOG  1TEL12
+			  {
+				char short_message[8];
+				strncpy(short_message, (char*)message_in, 7);
+				short_message[7] = '\0';
+			    if (log_write(5, 0x01, 0x02, 0x03, short_message) == 0) {
+				  LOG_INFO("LOG écrit");
+			    }   else {
+				  LOG_ERROR("Erreur écriture LOG ");
+			    }
+		      }
+		      if ( (message_in[4] =='A')  && (longueur_m==7))  // LEcture Log 1TEA01
+		      {
+			     uint16_t logs_read = log_read(message_in[5]-'0', message_in[6]-'0', '1');
+			     LOG_INFO("Logs lus: %i", logs_read);
+		      }
+          }
+          if ((message_in[2] == 'L') && (message_in[3] == 'O'))  // log_flash
+          {
+		      if ( (message_in[4] =='R')  && (message_in[5] =='a') &&  (message_in[6] =='z')
+		    		  && (longueur_m==7))  // Force effacement page Log 1LORaz
+		      {
+		    	  LOG_Format();
+		      }
+		      if ( (message_in[4] =='S')   && (longueur_m==5))  // Log:stats 1LOS
+		      {
+		    	  uint32_t total_entries, free_space;
+		    	  log_get_stats(&total_entries, &free_space);
+		      }
+		      if ( (message_in[4] =='E')  && (message_in[5] =='E') &&  (message_in[6] =='Z')
+		    		  && (longueur_m==7))  // Force effacement page eeprom 1LOEEZ
+		      {
+		    	  EEPROM_Format();
+		      }
+		      if ( (message_in[4] =='E') && (message_in[5] =='E') &&(longueur_m==6))  // EEprom:stats 1LOEE
+		      {
+		    	  uint32_t total_entries, free_space;
+		    	  EEPROM_GetStats(&total_entries, &free_space);
+		      }
+         }
       }
   }
+}
+
+/**
+ * @brief Vérifie la configuration flash
+ */
+void check_flash_config(void)
+{
+    LOG_INFO("=== CONFIGURATION FLASH ===");
+    LOG_INFO("FLASH_BASE: 0x%08lX", FLASH_BASE);
+    LOG_INFO("FLASH_SIZE: %d Ko", FLASH_SIZE);
+    LOG_INFO("FLASH_PAGE_SIZE: %d octets", FLASH_PAGE_SIZE);
+    
+    // Vérifier que les adresses EEPROM sont dans la plage flash
+    if (EEPROM_PAGE_0_ADDR >= FLASH_BASE && EEPROM_PAGE_0_ADDR < (FLASH_BASE + FLASH_SIZE * 1024)) {
+        LOG_INFO("Adresses EEPROM dans la plage flash: OK");
+    } else {
+        LOG_ERROR("Adresses EEPROM hors plage flash!");
+    }
+    
+    // Vérifier que les pages ne sont pas dans la zone du programme
+    if (EEPROM_PAGE_0_ADDR < (FLASH_BASE + 50 * 1024)) {  // 50KB de programme
+        LOG_ERROR("Pages EEPROM dans la zone du programme!");
+    } else {
+        LOG_INFO("Pages EEPROM hors zone programme: OK");
+    }
+    
+    LOG_INFO("EEPROM_PAGE_0_ADDR: 0x%08lX", EEPROM_PAGE_0_ADDR);
+}
+
+/**
+ * @brief Vérifie les permissions flash
+ */
+void check_flash_permissions(void)
+{
+    LOG_INFO("=== PERMISSIONS FLASH ===");
+    
+    // Vérifier les erreurs ECC
+    if (__HAL_FLASH_GET_FLAG(FLASH_FLAG_ECCR_ERRORS)) {
+        LOG_ERROR("Erreurs ECC detectees!");
+        __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ECCR_ERRORS);
+    }
+    
+    // Vérifier les erreurs d'opération
+    if (__HAL_FLASH_GET_FLAG(FLASH_FLAG_OPERR)) {
+        LOG_ERROR("Erreur d'operation flash!");
+        __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_OPERR);
+    }
+    
+    // Vérifier les erreurs de protection
+    if (__HAL_FLASH_GET_FLAG(FLASH_FLAG_WRPERR)) {
+        LOG_ERROR("Erreur de protection d'ecriture!");
+        __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_WRPERR);
+    }
+    
+    // Vérifier les erreurs d'alignement
+    if (__HAL_FLASH_GET_FLAG(FLASH_FLAG_PGAERR)) {
+        LOG_ERROR("Erreur d'alignement!");
+        __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_PGAERR);
+    }
+    
+    LOG_INFO("Flash accessible: OK");
 }
 

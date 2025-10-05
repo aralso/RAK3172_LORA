@@ -39,6 +39,7 @@
 
 // Niveau de verbosité global (modifiable)
 #define CURRENT_LOG_LEVEL  LOG_LEVEL_DEBUG
+#define WRITE_LOG_LEVEL	 LOG_LEVEL_WARNING
 
 extern uint8_t code_erreur, comptage_erreur;
 extern uint8_t err_donnee1, err_donnee2;
@@ -115,5 +116,8 @@ uint8_t envoie_mess_bin(const uint8_t *buf);
 uint8_t deci (uint8_t val);
 void envoi_code_erreur(void);
 
+// Fonctions de vérification flash
+void check_flash_config(void);
+void check_flash_permissions(void);
 
 #endif /* INC_COMMUNICATION_H_ */

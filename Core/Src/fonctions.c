@@ -7,6 +7,8 @@
 
 #include <communication.h>
 #include <fonctions.h>
+#include <eeprom_emul.h>
+#include <log_flash.h>
 #include "cmsis_os.h"
 #include "timers.h"
 #include "queue.h"
@@ -65,8 +67,11 @@ static void Timer20minCallback(TimerHandle_t xTimer);
 
 void init_functions(void)
 {
+	//EEPROM_Init();
+	//log_init();
+
 	// Afficher la cause du reset au démarrage
-	display_reset_cause();
+	//display_reset_cause();
 
 
 	// creation timers
