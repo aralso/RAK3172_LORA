@@ -30,16 +30,16 @@
 
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
-#include <communication.h>
-#include <fonctions.h>
-#include <eeprom_emul.h>
-#include <log_flash.h>
 #include "main.h"
 #include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include <communication.h>
+#include <fonctions.h>
+#include <eeprom_emul.h>
+#include <log_flash.h>
 #include "timers.h"
 #include "queue.h"
 #include <stdio.h>    // Pour sprintf
@@ -71,6 +71,15 @@ HAL_StatusTypeDef configure_lsi_oscillator(void);
 /* USER CODE BEGIN PM */
  QueueHandle_t Event_QueueHandle;
 
+ /* Stack utilisée (en mots de 32 bits)
+  création tache sans rien : 48
+  LOG_INFO : 58
+  LOG %s : 78
+  envoie_mess_ASC simple: 64
+  envoie_mess_ASC %s : 76
+  eeprom : 90
+  */
+
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -78,43 +87,38 @@ IWDG_HandleTypeDef hiwdg;
 
 RTC_HandleTypeDef hrtc;
 
-/* Stack utilisée (en mots de 32 bits)
- création tache sans rien : 48
- LOG_INFO : 58
- LOG %s : 78
- envoie_mess_ASC simple: 64
- envoie_mess_ASC %s : 76
- eeprom : 90
- */
+SUBGHZ_HandleTypeDef hsubghz;
+
+UART_HandleTypeDef huart2;
+
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
   .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 256 * 4  // 188 utilisé  +180byte/tache
+  .stack_size = 256 * 4
 };
 /* Definitions for LORA_RX_Task */
 osThreadId_t LORA_RX_TaskHandle;
 const osThreadAttr_t LORA_RX_Task_attributes = {
   .name = "LORA_RX_Task",
   .priority = (osPriority_t) osPriorityLow,
-  .stack_size = 256 * 4    // 200 utilisé
+  .stack_size = 256 * 4
 };
 /* Definitions for LORA_TX_Task */
 osThreadId_t LORA_TX_TaskHandle;
 const osThreadAttr_t LORA_TX_Task_attributes = {
   .name = "LORA_TX_Task",
   .priority = (osPriority_t) osPriorityLow4,
-  .stack_size = 256 * 4    // 208 utilisé
+  .stack_size = 256 * 4
 };
 /* Definitions for Appli_Task */
 osThreadId_t Appli_TaskHandle;
 const osThreadAttr_t Appli_Task_attributes = {
   .name = "Appli_Task",
   .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 480 * 4   // 222 utilisé
+  .stack_size = 480 * 4
 };
-
 /* USER CODE BEGIN PV */
 
 uint8_t test_val=0;
@@ -237,23 +241,20 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
-  /* Create the queue(s) */
-  /* creation of Event_Queue */
-  Event_QueueHandle = xQueueCreate(32, sizeof(uint16_t));
-
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
-  /* USER CODE END RTOS_QUEUES */
+  Event_QueueHandle = xQueueCreate(32, sizeof(uint16_t));
 
   size_t freeHeap = xPortGetFreeHeapSize();
-  char msgL[50];
-  sprintf(msgL, "Free heap before tasks: %i bytes\r", freeHeap);
-  HAL_Delay(500);
-  HAL_UART_Transmit(&huart2, (uint8_t*)msgL, strlen(msgL), 3000);
-  HAL_Delay(500);
+    char msgL[50];
+    sprintf(msgL, "Free heap before tasks: %i bytes\r", freeHeap);
+    HAL_Delay(500);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msgL, strlen(msgL), 3000);
+    HAL_Delay(500);
 
-  init_communication();
+    init_communication();
 
+  /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* creation of defaultTask */
@@ -268,31 +269,31 @@ int main(void)
   /* creation of Appli_Task */
   Appli_TaskHandle = osThreadNew(Appli_Tsk, NULL, &Appli_Task_attributes);
 
-  uint8_t code_err_tache=0;
-  if (defaultTaskHandle == NULL) code_err_tache=1;
-  if (LORA_RX_TaskHandle == NULL) code_err_tache|=2;
-  if (LORA_TX_TaskHandle == NULL) code_err_tache|=4;
-  if (Appli_TaskHandle == NULL) code_err_tache|=8;
-  if (Uart_RX_TaskHandle == NULL) code_err_tache|=16;
-  if (Uart_TX_TaskHandle == NULL) code_err_tache|=32;
-
-  if (code_err_tache) {
-	   HAL_Delay(500);
-	   sprintf(msgL, "erreur tache: %02X ", code_err_tache);
-	  HAL_UART_Transmit(&huart2, (uint8_t*)msgL, strlen(msgL), 3000);
-	   HAL_Delay(500);
-      //LOG_ERROR("Failed to create Appli_Task");
-      // La tâche n'a pas pu être créée
-  }
-  // Après la création :
-   freeHeap = xPortGetFreeHeapSize();
-  sprintf(msgL, "Free heap after tasks: %i bytes\r", freeHeap);
-  HAL_Delay(500);
-  HAL_UART_Transmit(&huart2, (uint8_t*)msgL, strlen(msgL), 3000);
-  HAL_Delay(500);
-
   /* USER CODE BEGIN RTOS_THREADS */
-  init_functions();
+  uint8_t code_err_tache=0;
+    if (defaultTaskHandle == NULL) code_err_tache=1;
+    if (LORA_RX_TaskHandle == NULL) code_err_tache|=2;
+    if (LORA_TX_TaskHandle == NULL) code_err_tache|=4;
+    if (Appli_TaskHandle == NULL) code_err_tache|=8;
+    if (Uart_RX_TaskHandle == NULL) code_err_tache|=16;
+    if (Uart_TX_TaskHandle == NULL) code_err_tache|=32;
+
+    if (code_err_tache) {
+  	   HAL_Delay(500);
+  	   sprintf(msgL, "erreur tache: %02X ", code_err_tache);
+  	  HAL_UART_Transmit(&huart2, (uint8_t*)msgL, strlen(msgL), 3000);
+  	   HAL_Delay(500);
+        //LOG_ERROR("Failed to create Appli_Task");
+        // La tâche n'a pas pu être créée
+    }
+    // Après la création :
+     freeHeap = xPortGetFreeHeapSize();
+    sprintf(msgL, "Free heap after tasks: %i bytes\r", freeHeap);
+    HAL_Delay(500);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msgL, strlen(msgL), 3000);
+    HAL_Delay(500);
+
+    init_functions();
 
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -303,9 +304,6 @@ int main(void)
 
   /* Start scheduler */
   osKernelStart();
-
-  //HAL_UART_Transmit(&huart2, (uint8_t*)"InitS", 5, 3000);
-  //HAL_Delay(500);
 
   /* We should never get here as control is now taken by the scheduler */
 
@@ -1127,24 +1125,6 @@ void Appli_Tsk(void *argument)
   /* USER CODE END Appli_Tsk */
 }
 
-/* USER CODE BEGIN Header_Uart1_Tsk */
-/* USER CODE END Header_Uart1_Tsk */
-
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-    if(GPIO_Pin == GPIO_PIN_0)
-    {
-        LOG_DEBUG("Button pressed on PA0");
-
-        if(HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_RESET)
-        {
-            // Envoyer événement bouton pressé
-            send_event(EVENT_BUTTON, SOURCE_BUTTON, 1);
-        }
-    }
-}
-
-
 /**
   * @brief  Period elapsed callback in non blocking mode
   * @note   This function is called  when TIM16 interrupt took place, inside
@@ -1163,7 +1143,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
+}
 
+  void assert_failed(const char *file, int line)
+  {
+      char msg[100];
+      int len = snprintf(msg, sizeof(msg), "-- ASSERT failed at %s:%d\r\n", file, line);
+      msg[0] = dest_log;
+      msg[1] = My_Address;
+      HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, HAL_MAX_DELAY);
+
+      HAL_Delay(2000);
+
+      // Reset du système
+      NVIC_SystemReset();
+      // Bloquer ici
+      //taskDISABLE_INTERRUPTS();
+      //for(;;);
   /* USER CODE END Callback 1 */
 }
 
@@ -1218,21 +1214,3 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-
-void assert_failed(const char *file, int line)
-{
-    char msg[100];
-    int len = snprintf(msg, sizeof(msg), "-- ASSERT failed at %s:%d\r\n", file, line);
-    msg[0] = dest_log;
-    msg[1] = My_Address;
-    HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, HAL_MAX_DELAY);
-
-    HAL_Delay(2000);
-
-    // Reset du système
-    NVIC_SystemReset();
-    // Bloquer ici
-    //taskDISABLE_INTERRUPTS();
-    //for(;;);
-}
-

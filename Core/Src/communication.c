@@ -42,9 +42,9 @@ static uint8_t mess_ASC[MESS_LG_MAX]; // Variable locale pour travailler
 static char formatted_buffer[MESS_LG_MAX]; // Buffer pour le formatage
 static SemaphoreHandle_t log_mutex = NULL;
 
-SUBGHZ_HandleTypeDef hsubghz;
+extern SUBGHZ_HandleTypeDef hsubghz;
 
-UART_HandleTypeDef huart2;
+extern UART_HandleTypeDef huart2;
 
 static uint8_t rx_char;
 static uint8_t expected_length = 0;
