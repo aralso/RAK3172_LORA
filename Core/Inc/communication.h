@@ -61,7 +61,13 @@ extern uint8_t err_donnee1, err_donnee2;
 #define erreur_queue_appli     0x25
 #define erreur_mess            0x2F
 
+// Code erreur pour log_write :
+#define log_w_err_uart_bloque	0x01
 
+#define UART_SEND(msg) do { \
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, sizeof(msg) - 1, 3000); \
+    HAL_Delay(100); \
+} while(0)
 
 
 #define NB_UART 1

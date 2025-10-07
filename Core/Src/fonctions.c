@@ -9,16 +9,18 @@
 #include <fonctions.h>
 #include <eeprom_emul.h>
 #include <log_flash.h>
+#include <main.h>
 #include "cmsis_os.h"
 #include "timers.h"
 #include "queue.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <time.h>        // Pour struct tm et mktime
 
 // === SYSTÈME DE WATCHDOG ===
 // Tableau de suivi des tâches
-static watchdog_task_info_t watchdog_tasks[WATCHDOG_TASK_NB];
+static watchdog_task_info_t watchdog_tasks[WATCHDOG_TASK_COUNT];
 
 #define nb_erreurs_enregistrees  20
 #define nb_erreurs_envoyees      30
@@ -45,9 +47,9 @@ extern osThreadId_t Uart_TX_TaskHandle;
 
 
 // Fonctions pour gérer le contexte
-void watchdog_set_timeout(watchdog_task_id_t task_id, uint32_t timeout_ms);
+void watchdog_set_timeout(watchdog_task_id_t task_id, uint32_t timeout_s);
 
-static const char* watchdog_task_names[WATCHDOG_TASK_NB] = {
+static const char* watchdog_task_names[WATCHDOG_TASK_COUNT] = {
     "Default_Tsk",      // WATCHDOG_TASK_DEFAULT = 0
     "LORA_RX_Tsk",      // WATCHDOG_TASK_LORA_RX = 1
     "LORA_TX_Tsk",      // WATCHDOG_TASK_LORA_TX = 2
@@ -67,8 +69,12 @@ static void Timer20minCallback(TimerHandle_t xTimer);
 
 void init_functions(void)
 {
-	//EEPROM_Init();
-	//log_init();
+    if (log_init() == HAL_OK)
+        LOG_INFO("LOG initialisee");
+     else
+        LOG_ERROR("Erreur LOG");
+
+
 
 	// Afficher la cause du reset au démarrage
 	//display_reset_cause();
@@ -77,12 +83,13 @@ void init_functions(void)
 	// creation timers
 	 HTimer_24h = xTimerCreate(
 	        "Timer24h",                          // Nom
-	        pdMS_TO_TICKS(24*3600*1000),     // Période en ticks
+	        24*3600*1000,     // Période en ticks
 	        pdTRUE,                             // Auto-reload
 	        (void*)0,                           // ID optionnel
 	        Timer24hCallback                     // Callback
 	    );
 	    if (HTimer_24h != NULL) xTimerStart(HTimer_24h, 0);
+
 
 		 HTimer_20min = xTimerCreate(
 		        "Timer20min",                          // Nom
@@ -101,6 +108,7 @@ void init_functions(void)
 
 static void Timer24hCallback(TimerHandle_t xTimer)
 {
+    LOG_INFO("timer24h declenche");
 	event_t evt = { EVENT_TIMER_24h, 0, 0 };
 	if (xQueueSend(Event_QueueHandle, &evt, 0) != pdPASS)
 	{
@@ -183,6 +191,8 @@ void envoi_code_erreur (void)        // envoie l'erreur a dest_erreur_reset
     // Erreurs 0 a 1F : envoye une seule fois (appli >0x10)
     // Erreurs 20 a 7F : 3 fois        (Appli >0x70)  comm:2,3 util/periph:4  radio:5  tab:6 conc/appli:7
     // Erreurs 80 a FF : tout le temps (Appli > 0xD0)
+
+    LOG_INFO("erreur %i %i", code_erreur, err_donnee1);
 
     if (comptage_erreur < nb_erreurs_envoyees)  // 30 envoyees, 20 enregistrees
     {
@@ -270,7 +280,7 @@ void watchdog_init(void)
     LOG_INFO("Initializing watchdog system...");
 
     // Initialiser toutes les tâches comme inactives
-    for (int i = 0; i < WATCHDOG_TASK_NB; i++) {
+    for (int i = 0; i < WATCHDOG_TASK_COUNT; i++) {
         watchdog_tasks[i].last_heartbeat = 0;
         watchdog_tasks[i].timeout_ms = WATCHDOG_TIMEOUT_MS;
         watchdog_tasks[i].is_active = 0;
@@ -299,13 +309,14 @@ void watchdog_init(void)
 
 void watchdog_set_context(watchdog_task_id_t task_id, watchdog_context_t context)
 {
-    if (task_id < WATCHDOG_TASK_NB) {
+    if (task_id < WATCHDOG_TASK_COUNT) {
         watchdog_tasks[task_id].context = context;
 
         // Ajuster le timeout selon le contexte
         switch (context) {
             case WATCHDOG_CONTEXT_ACTIVE:
                 watchdog_tasks[task_id].timeout_ms = WATCHDOG_TIMEOUT_MS;  // 30s
+                watchdog_tasks[task_id].last_heartbeat = xTaskGetTickCount()/1000;
                 break;
             case WATCHDOG_CONTEXT_WAITING:
             case WATCHDOG_CONTEXT_SLEEPING:
@@ -313,29 +324,32 @@ void watchdog_set_context(watchdog_task_id_t task_id, watchdog_context_t context
                 watchdog_tasks[task_id].timeout_ms = 0;  // Pas de surveillance
                 break;
             case WATCHDOG_CONTEXT_BLOCKED:
-                watchdog_tasks[task_id].timeout_ms = 5000;  // 5s
+                watchdog_tasks[task_id].timeout_ms = 0;  // 5s
                 break;
             case WATCHDOG_CONTEXT_CRITICAL:
-                watchdog_tasks[task_id].timeout_ms = 10000;  // 10s
+                watchdog_tasks[task_id].timeout_ms = 10;  // 10s
+                watchdog_tasks[task_id].last_heartbeat = xTaskGetTickCount()/1000;
                 break;
             case WATCHDOG_CONTEXT_UART_RX_ACTIVE:
-                watchdog_tasks[task_id].timeout_ms = 2000;  // 2s
-                break;
+                watchdog_tasks[task_id].timeout_ms = 3;  // 2s
+                watchdog_tasks[task_id].last_heartbeat = xTaskGetTickCount()/1000;
+				break;
         }
 
-        /*LOG_DEBUG("Task %s context set to %d, timeout: %u ms",
-                 watchdog_task_names[task_id], context,
-                 (unsigned int)watchdog_tasks[task_id].timeout_ms);*/
+
+        //LOG_DEBUG("%s cont %d, timer: %us",
+        //         watchdog_task_names[task_id], watchdog_tasks[task_id].context,
+        //         (unsigned int)watchdog_tasks[task_id].timeout_ms);
     }
 }
 
 // Fonction pour définir un timeout personnalisé
-void watchdog_set_timeout(watchdog_task_id_t task_id, uint32_t timeout_ms)
+void watchdog_set_timeout(watchdog_task_id_t task_id, uint32_t timeout_s)
 {
-    if (task_id < WATCHDOG_TASK_NB) {
-        watchdog_tasks[task_id].timeout_ms = timeout_ms;
-        LOG_DEBUG("Task %s timeout set to %u ms",
-                 watchdog_task_names[task_id], (unsigned int)timeout_ms);
+    if (task_id < WATCHDOG_TASK_COUNT) {
+        watchdog_tasks[task_id].timeout_ms = timeout_s;
+        LOG_DEBUG("Task %s timeout set to %us",
+                 watchdog_task_names[task_id], (unsigned int)timeout_s);
     }
 }
 
@@ -344,7 +358,12 @@ void watchdog_set_timeout(watchdog_task_id_t task_id, uint32_t timeout_ms)
  */
 static void WatchdogTimerCallback(TimerHandle_t xTimer)
 {
-    watchdog_check_all_tasks();
+    //LOG_INFO("timer24h declenche");
+	event_t evt = { EVENT_WATCHDOG_CHECK, 0, 0 };
+	if (xQueueSend(Event_QueueHandle, &evt, 0) != pdPASS)
+	{
+	    LOG_ERROR("Event watch queue full - message lost");
+	}
 }
 
 /**
@@ -352,9 +371,9 @@ static void WatchdogTimerCallback(TimerHandle_t xTimer)
  */
 void watchdog_task_start(watchdog_task_id_t task_id)
 {
-    if (task_id < WATCHDOG_TASK_NB) {
+    if (task_id < WATCHDOG_TASK_COUNT) {
         watchdog_tasks[task_id].is_active = 1;
-        watchdog_tasks[task_id].last_heartbeat = xTaskGetTickCount();
+        watchdog_tasks[task_id].last_heartbeat = xTaskGetTickCount()/1000;
         watchdog_tasks[task_id].error_count = 0;
         //LOG_DEBUG("Watchdog started for task %d", task_id);
     }
@@ -365,7 +384,7 @@ void watchdog_task_start(watchdog_task_id_t task_id)
  */
 void watchdog_task_stop(watchdog_task_id_t task_id)
 {
-    if (task_id < WATCHDOG_TASK_NB) {
+    if (task_id < WATCHDOG_TASK_COUNT) {
         watchdog_tasks[task_id].is_active = 0;
         LOG_DEBUG("Watchdog stopped for task %d", task_id);
     }
@@ -376,8 +395,8 @@ void watchdog_task_stop(watchdog_task_id_t task_id)
  */
 void watchdog_task_heartbeat(watchdog_task_id_t task_id)
 {
-    if (task_id < WATCHDOG_TASK_NB && watchdog_tasks[task_id].is_active) {
-        watchdog_tasks[task_id].last_heartbeat = xTaskGetTickCount();
+    if (task_id < WATCHDOG_TASK_COUNT && watchdog_tasks[task_id].is_active) {
+        watchdog_tasks[task_id].last_heartbeat = xTaskGetTickCount()/1000;
         watchdog_tasks[task_id].error_count = 0; // Reset du compteur d'erreurs
     }
 }
@@ -387,14 +406,14 @@ void watchdog_task_heartbeat(watchdog_task_id_t task_id)
  */
 uint8_t watchdog_is_task_alive(watchdog_task_id_t task_id)
 {
-    if (task_id >= WATCHDOG_TASK_NB || !watchdog_tasks[task_id].is_active) {
+    if (task_id >= WATCHDOG_TASK_COUNT || !watchdog_tasks[task_id].is_active) {
         return 1; // Tâche non surveillée ou inactive = considérée comme vivante
     }
 
-    uint32_t current_time = xTaskGetTickCount();
-    uint32_t elapsed_ms = (current_time - watchdog_tasks[task_id].last_heartbeat) * 1000 / configTICK_RATE_HZ;
+    uint32_t current_time = xTaskGetTickCount()/1000;
+    uint32_t elapsed_s = (current_time - watchdog_tasks[task_id].last_heartbeat);// * 1000 / configTICK_RATE_HZ;
 
-    return (elapsed_ms < watchdog_tasks[task_id].timeout_ms);
+    return (elapsed_s < watchdog_tasks[task_id].timeout_ms);
 }
 
 /**
@@ -402,22 +421,36 @@ uint8_t watchdog_is_task_alive(watchdog_task_id_t task_id)
  */
 void watchdog_check_all_tasks(void)
 {
-    uint32_t current_time = xTaskGetTickCount();
+
+    uint32_t current_time = xTaskGetTickCount()/1000;
+	//LOG_INFO("Watchdog : check all - Time:%i", current_time);
+
     uint8_t critical_errors = 0;
 
-    for (int i = 0; i < WATCHDOG_TASK_NB; i++) {
-        if (!watchdog_tasks[i].is_active) {
+    for (int i = 0; i < WATCHDOG_TASK_COUNT; i++) {
+        if (!watchdog_tasks[i].is_active)
+		{
             continue; // Tâche non surveillée
         }
+
+        /*if ((watchdog_tasks[i].context != WATCHDOG_CONTEXT_ACTIVE)
+		&&  (watchdog_tasks[i].context != WATCHDOG_CONTEXT_CRITICAL))
+		{
+            continue; // Tâche non surveillée temporairement
+        }*/
 
         // Si timeout = 0, pas de surveillance
         if (watchdog_tasks[i].timeout_ms == 0) {
             continue; // Tâche en attente/sommeil
         }
 
-        uint32_t elapsed_ms = (current_time - watchdog_tasks[i].last_heartbeat) * 1000 / configTICK_RATE_HZ;
+        //LOG_INFO("Watchdog : check %i last:%i", i, watchdog_tasks[i].last_heartbeat);
 
-        if (elapsed_ms >= watchdog_tasks[i].timeout_ms) {
+        uint32_t elapsed_s = (current_time - watchdog_tasks[i].last_heartbeat); // * 1000 / configTICK_RATE_HZ;
+
+        if (elapsed_s >= watchdog_tasks[i].timeout_ms)
+        {
+
             watchdog_tasks[i].error_count++;
 
             const char* context_name = "Unknown";
@@ -431,9 +464,10 @@ void watchdog_check_all_tasks(void)
                 case WATCHDOG_CONTEXT_UART_RX_ACTIVE: context_name = "UART_RX_Active"; break;
             }
 
-            LOG_ERROR("%s timeout %s Elaps: %us, Err:%u",
+            LOG_ERROR("%s timeout %s %is, Er:%u tm:%i",
                      watchdog_task_names[i], context_name,
-                     (unsigned int)elapsed_ms/1000, watchdog_tasks[i].error_count);
+                     (unsigned int)elapsed_s, watchdog_tasks[i].error_count,
+					 watchdog_tasks[i].timeout_ms);
 
             if (watchdog_tasks[i].error_count >= WATCHDOG_ERROR_THRESHOLD) {
                 LOG_ERROR("Task %s exceeded threshold, system reset!",
@@ -455,12 +489,12 @@ void watchdog_print_status(void)
 {
     LOG_INFO("=== WATCHDOG STATUS ===");
 
-    for (int i = 0; i < WATCHDOG_TASK_NB; i++) {
+    for (int i = 0; i < WATCHDOG_TASK_COUNT; i++) {
         const char* task_name = watchdog_task_names[i];
 
         if (watchdog_tasks[i].is_active) {
-            uint32_t current_time = xTaskGetTickCount();
-            uint32_t elapsed_ms = (current_time - watchdog_tasks[i].last_heartbeat) * 1000 / configTICK_RATE_HZ;
+            uint32_t current_time = xTaskGetTickCount()/1000;
+            uint32_t elapsed_s = (current_time - watchdog_tasks[i].last_heartbeat); // * 1000 / configTICK_RATE_HZ;
 
             const char* context_name = "Unknown";
             switch (watchdog_tasks[i].context) {
@@ -473,8 +507,8 @@ void watchdog_print_status(void)
                 case WATCHDOG_CONTEXT_UART_RX_ACTIVE: context_name = "UART_RX_Active"; break;
             }
 
-            LOG_INFO("%s: %s, Last beat: %u ms, Err: %u",
-                    task_name, context_name, (unsigned int)elapsed_ms, watchdog_tasks[i].error_count);
+            LOG_INFO("%s: %s, Last beat: %u s, Err: %u",
+                    task_name, context_name, (unsigned int)elapsed_s, watchdog_tasks[i].error_count);
         } else {
             LOG_INFO("%s: Inactive", task_name);
         }
@@ -704,3 +738,206 @@ void vApplicationMallocFailedHook(void)
     //for(;;);
 }
 
+void set_rtc_time_date(void)
+{
+    RTC_TimeTypeDef sTime = {0};
+    RTC_DateTypeDef sDate = {0};
+
+    // Configuration de l'heure (exemple : 14:30:25)
+    sTime.Hours = 22;
+    sTime.Minutes = 30;
+    sTime.Seconds = 25;
+    sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+    sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+
+    if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN) != HAL_OK) {
+        LOG_ERROR("RTC set time failed");
+        return;
+    }
+
+    // Configuration de la date (exemple : Dimanche 15/12/2024)
+    sDate.WeekDay = RTC_WEEKDAY_SUNDAY;  // Dimanche
+    sDate.Month = RTC_MONTH_OCTOBER;    // Décembre
+    sDate.Date = 5;                     // 15
+    sDate.Year = 25;                     // 2024 (année - 2000)
+
+    if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN) != HAL_OK) {
+        LOG_ERROR("RTC set date failed");
+        return;
+    }
+
+    LOG_INFO("RTC configured: %02d:%02d:%02d %02d/%02d/20%02d",
+             sTime.Hours, sTime.Minutes, sTime.Seconds,
+             sDate.Date, sDate.Month, sDate.Year);
+}
+
+uint32_t get_rtc_timestamp(void)
+{
+    RTC_TimeTypeDef sTime;
+    RTC_DateTypeDef sDate;
+
+    // Lire l'heure et la date actuelles
+    HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+    HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+
+    // Convertir en timestamp Unix (secondes depuis 1er janvier 1970)
+    struct tm timeinfo = {
+        .tm_sec = sTime.Seconds,
+        .tm_min = sTime.Minutes,
+        .tm_hour = sTime.Hours,
+        .tm_mday = sDate.Date,
+        .tm_mon = sDate.Month - 1,      // Janvier = 0
+        .tm_year = sDate.Year + 100     // Année depuis 1900
+    };
+
+    return (uint32_t)mktime(&timeinfo);
+}
+
+void display_current_time(void)
+{
+    RTC_TimeTypeDef sTime;
+    RTC_DateTypeDef sDate;
+
+    HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+    HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+
+    LOG_INFO("HL: %02d/%02d/20%02d %02d:%02d:%02d", sDate.Date, sDate.Month, sDate.Year, sTime.Hours, sTime.Minutes, sTime.Seconds);
+    LOG_INFO("Timestamp: %08X", get_rtc_timestamp());
+    //LOG_INFO("Timestamp: %lu", get_rtc_timestamp());
+}
+
+HAL_StatusTypeDef set_rtc_time_from_string(const char* time_str)
+{
+    if (time_str == NULL || strlen(time_str) != 6) {
+        LOG_ERROR("Invalid time format. Expected HHMMSS");
+        return HAL_ERROR;
+    }
+
+    // Extraire les composants
+    //uint8_t hours, minutes, seconds;
+    /*if (sscanf(time_str, "%2hhu%2hhu%2hhu", &hours, &minutes, &seconds) != 3) {
+        LOG_ERROR("Failed to parse time string: %s", time_str);
+        return HAL_ERROR;
+    }*/
+    uint8_t hours = (time_str[0] - '0') * 10 + (time_str[1] - '0');
+    uint8_t minutes = (time_str[2] - '0') * 10 + (time_str[3] - '0');
+    uint8_t seconds = (time_str[4] - '0') * 10 + (time_str[5] - '0');
+
+    // Vérifier la validité des valeurs
+    if (hours > 23 || minutes > 59 || seconds > 59) {
+        LOG_ERROR("Invalid time values: %02d:%02d:%02d", hours, minutes, seconds);
+        return HAL_ERROR;
+    }
+
+    // Configurer le RTC
+    RTC_TimeTypeDef sTime = {0};
+    sTime.Hours = hours;
+    sTime.Minutes = minutes;
+    sTime.Seconds = seconds;
+    sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+    sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+
+    HAL_StatusTypeDef status = HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+
+    if (status == HAL_OK) {
+        LOG_INFO("RTC time set to: %02d:%02d:%02d", hours, minutes, seconds);
+    } else {
+        LOG_ERROR("Failed to set RTC time: %d", status);
+    }
+
+    return status;
+}
+
+HAL_StatusTypeDef set_rtc_date_from_string(const char* date_str)
+{
+    if (date_str == NULL || strlen(date_str) != 6) {
+        LOG_ERROR("Invalid date format. Expected DDMMYY");
+        return HAL_ERROR;
+    }
+
+    // Extraire les composants
+    uint8_t day = (date_str[0] - '0') * 10 + (date_str[1] - '0');
+    uint8_t month = (date_str[2] - '0') * 10 + (date_str[3] - '0');
+    uint8_t year = (date_str[4] - '0') * 10 + (date_str[5] - '0');
+
+    // Vérifier la validité des valeurs
+    if (day < 1 || day > 31) {
+        LOG_ERROR("Invalid day: %d (must be 1-31)", day);
+        return HAL_ERROR;
+    }
+
+    if (month < 1 || month > 12) {
+        LOG_ERROR("Invalid month: %d (must be 1-12)", month);
+        return HAL_ERROR;
+    }
+
+    if (year > 99) {
+        LOG_ERROR("Invalid year: %d (must be 0-99)", year);
+        return HAL_ERROR;
+    }
+
+    // Configurer le RTC (sans calculer le jour de la semaine)
+    RTC_DateTypeDef sDate = {0};
+    sDate.WeekDay = 1;  // Lundi par défaut (ou jour fixe)
+    sDate.Month = month;
+    sDate.Date = day;
+    sDate.Year = year;  // RTC stocke l'année - 2000
+
+    HAL_StatusTypeDef status = HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+
+    if (status == HAL_OK) {
+        LOG_INFO("RTC date set to: %02d/%02d/20%02d", day, month, year);
+    } else {
+        LOG_ERROR("Failed to set RTC date: %d", status);
+    }
+
+    return status;
+}
+
+
+HAL_StatusTypeDef set_rtc_from_timestamp(uint32_t timestamp)
+{
+    // Convertir le timestamp Unix en date/heure
+    time_t rawtime = (time_t)timestamp;
+    struct tm *timeinfo = localtime(&rawtime);
+
+    if (timeinfo == NULL) {
+        LOG_ERROR("Invalid timestamp: %lu", timestamp);
+        return HAL_ERROR;
+    }
+
+    // Configurer l'heure
+    RTC_TimeTypeDef sTime = {0};
+    sTime.Hours = timeinfo->tm_hour;
+    sTime.Minutes = timeinfo->tm_min;
+    sTime.Seconds = timeinfo->tm_sec;
+    sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+    sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+
+    HAL_StatusTypeDef time_status = HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+
+    if (time_status != HAL_OK) {
+        LOG_ERROR("Failed to set RTC time: %d", time_status);
+        return time_status;
+    }
+
+    // Configurer la date
+    RTC_DateTypeDef sDate = {0};
+    sDate.WeekDay = timeinfo->tm_wday + 1;  // Convertir 0-6 en 1-7
+    sDate.Month = timeinfo->tm_mon + 1;     // Convertir 0-11 en 1-12
+    sDate.Date = timeinfo->tm_mday;
+    sDate.Year = timeinfo->tm_year - 100;    // Convertir depuis 1900
+
+    HAL_StatusTypeDef date_status = HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+
+    if (date_status != HAL_OK) {
+        LOG_ERROR("Failed to set RTC date: %d", date_status);
+        return date_status;
+    }
+
+    LOG_INFO("RTC set from timestamp %lu: %02d/%02d/%04d %02d:%02d:%02d",
+             timestamp, sDate.Date, sDate.Month, 2000 + sDate.Year,
+             sTime.Hours, sTime.Minutes, sTime.Seconds);
+
+    return HAL_OK;
+}

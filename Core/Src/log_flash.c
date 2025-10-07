@@ -3,19 +3,24 @@
 #include <string.h>
 #include <stdbool.h>
 #include <communication.h>
+#include <fonctions.h>
+#include <time.h>
 
 // Variables globales
 static uint32_t current_log_page = 0;
 static uint32_t current_write_index = 0;
 static log_page_header_t log_page_headers[LOG_PAGE_COUNT];
 static const uint32_t LOG_MAGIC_NUMBER = 0x12345678;
+static uint8_t bufferTx_log[MESS_LG_MAX];
+uint8_t index_bufferTx;
+static log_header_flash_t header_f;
 
 // Fonctions internes
 static HAL_StatusTypeDef log_read_page_header(uint8_t i);
 static HAL_StatusTypeDef log_write_page_header(uint8_t page_num);
 static HAL_StatusTypeDef log_find_active_page(void);
 static HAL_StatusTypeDef log_read_entry(uint32_t page_addr, uint16_t entry_index, LogEntry *entry);
-static HAL_StatusTypeDef log_write_entry_to_page(uint32_t page_addr, uint16_t entry_index, const LogEntry *entry);
+static HAL_StatusTypeDef log_write_entry_to_page(uint32_t entry_addr, const LogEntry *entry);
 static HAL_StatusTypeDef log_erase_page(uint32_t page_addr);
 static HAL_StatusTypeDef log_switch_to_next_page(void);
 static uint16_t find_next_write_index(uint8_t page_num);
@@ -23,7 +28,7 @@ static uint8_t log_write_final(const LogEntry* entry);
 
 //static uint32_t log_calculate_crc(const uint8_t *data, uint32_t length);
 
-static log_header_flash_t header_f;
+
 
 /**
  * @brief Initialise le système de logs flash
@@ -33,6 +38,7 @@ HAL_StatusTypeDef log_init(void)
 {
     HAL_StatusTypeDef status = HAL_OK;
     
+    index_bufferTx=0;
 
     // Lire les en-têtes des pages de logs
     for (int i = 0; i < LOG_PAGE_COUNT; i++) {
@@ -73,19 +79,19 @@ uint8_t log_write(uint8_t code, uint8_t c1, uint8_t c2, uint8_t c3, const char* 
     LogEntry entry;
     
     // Remplir la structure
-    entry.timestamp = HAL_GetTick()/1000;  // en secondes
+    entry.timestamp = get_rtc_timestamp(); //HAL_GetTick()/1000;  // en secondes
     entry.code = code;
     entry.c1 = c1;
     entry.c2 = c2;
     entry.c3 = c3;
     
     // Copier le message avec gestion intelligente de la terminaison
-    uint8_t message_size = LOG_ENTRY_SIZE - 8;  // 8 octets pour le message
-    uint8_t message_len = strlen(message);
+    //uint8_t message_size = LOG_ENTRY_SIZE - 8;  // 8 octets pour le message
+    //uint8_t message_len = strlen(message);
     
-    if (message_len >= message_size) {
+    if (strlen(message) >= (LOG_ENTRY_SIZE - 8)) {
         // Message de 8 caractères ou plus : copier les 8 premiers sans terminaison
-        memcpy(entry.message, message, message_size);
+        memcpy(entry.message, message, (LOG_ENTRY_SIZE - 8));
     } else {
         // Message de moins de 8 caractères : copier avec terminaison null
         strcpy(entry.message, message);
@@ -102,7 +108,7 @@ uint8_t log_write(uint8_t code, uint8_t c1, uint8_t c2, uint8_t c3, const char* 
 uint8_t log_write_entry ( LogEntry* entry)
 {
 
-    entry->timestamp = HAL_GetTick()/1000;  // en secondes
+    entry->timestamp = get_rtc_timestamp(); // en secondes
 
     return log_write_final(entry);
 }
@@ -121,9 +127,26 @@ uint8_t log_write_final(const LogEntry* entry)
         }
     }
     
+	/*LOG_DEBUG("ENTRY TO W");
+    LOG_DEBUG("Tstp: 0x%08lX (%lu)", entry->timestamp, entry->timestamp);
+    LOG_DEBUG("Code: 0x%02X (%d)", entry->code, entry->code);
+    LOG_DEBUG("C1: 0x%02X (%d)", entry->c1, entry->c1);
+    LOG_DEBUG("C2: 0x%02X (%d)", entry->c2, entry->c2);
+    //LOG_DEBUG("C3: 0x%02X (%d)", entry->c3, entry->c3);
+
+    // Afficher le message octet par octet
+    LOG_DEBUG("Message bytes:");
+    for (int j = 0; j < (LOG_ENTRY_SIZE-8); j++) {
+        LOG_DEBUG("  [%d]: 0x%02X ('%c')", j, (uint8_t)entry->message[j],
+                  (entry->message[j] >= 32 && entry->message[j] <= 126) ? entry->message[j] : '.');
+    }
+
+    LOG_DEBUG("Entry ptr: 0x%08lX, : ts=0x%08lX, code=%d",
+              (uint32_t)entry, entry->timestamp, entry->code);*/
+
     // Écrire l'entrée dans la page actuelle
-    uint32_t page_addr = LOG_PAGE_ADDR(current_log_page);
-    if (log_write_entry_to_page(page_addr, current_write_index, entry) != HAL_OK) {
+    uint32_t entry_addr = LOG_PAGE_ADDR(current_log_page) + (current_write_index* LOG_ENTRY_SIZE);
+    if (log_write_entry_to_page(entry_addr,  entry) != HAL_OK) {
         return 1;
     }
     
@@ -141,9 +164,10 @@ uint8_t log_write_final(const LogEntry* entry)
  * @param debut_entry Premier log à lire (depuis le plus récent)
  * @param max_entries Nombre maximum d'entrées à lire
  * @param dest Destinataire pour l'envoi des logs
+ * @param : type : 0:acsii 1:binaire
  * @retval Nombre d'entrées lues
  */
-uint16_t log_read(uint16_t debut_entry, uint16_t max_entries, uint8_t dest)
+uint16_t log_read(uint16_t debut_entry, uint16_t max_entries, uint8_t dest, uint8_t type)
 {
     if (max_entries == 0) {
         return 0;
@@ -185,6 +209,46 @@ uint16_t log_read(uint16_t debut_entry, uint16_t max_entries, uint8_t dest)
                 {
                     LogEntry entry;
                     if (log_read_entry(page_addr, i, &entry) == HAL_OK) {
+
+
+                    		/*LOG_DEBUG("=== ENTRY %d ===", i);
+                    	    LOG_DEBUG("Timestamp: 0x%08lX (%lu)", entry.timestamp, entry.timestamp);
+                    	    LOG_DEBUG("Code: 0x%02X (%d)", entry.code, entry.code);
+                    	    LOG_DEBUG("C1: 0x%02X (%d)", entry.c1, entry.c1);
+                    	    LOG_DEBUG("C2: 0x%02X (%d)", entry.c2, entry.c2);
+                    	    LOG_DEBUG("C3: 0x%02X (%d)", entry.c3, entry.c3);
+
+                    	    // Afficher le message octet par octet
+                    	    LOG_DEBUG("Message bytes:");
+                    	    for (int j = 0; j < (LOG_ENTRY_SIZE-8); j++) {
+                    	        LOG_DEBUG("  [%d]: 0x%02X ('%c')", j, (uint8_t)entry.message[j],
+                    	                  (entry.message[j] >= 32 && entry.message[j] <= 126) ? entry.message[j] : '.');
+                    	    }
+
+                    	    // Afficher le message comme chaîne (si possible)
+                    	    LOG_DEBUG("Message as string: \"%s\"", entry.message);
+                    	    LOG_DEBUG("Message as string: \"%s\"", entry.message);
+                    	    LOG_DEBUG("Message as string: \"%s\"", entry.message);
+                    	    LOG_DEBUG("Message as string: \"%s\"", entry.message);
+                    	    LOG_DEBUG("Message as string: \"%s\"", entry.message);
+                    	    LOG_DEBUG("Message as string: \"%s\"", entry.message);
+                    	    LOG_DEBUG("Message as string: \"%s\"", entry.message);
+                    	    LOG_DEBUG("Message as string: \"%s\"", entry.message);
+                    	    LOG_DEBUG("Message as string: \"%s\"", entry.message);
+                    	    LOG_DEBUG("Message as string: \"%s\"", entry.message);
+
+                    	    // Afficher la structure complète en hexadécimal
+                    	    uint8_t *entry_bytes = (uint8_t*)&entry;
+                    	    LOG_DEBUG("Raw entry data:");
+                    	    for (int j = 0; j < sizeof(LogEntry); j++) {
+                    	        if (j % 8 == 0) LOG_DEBUG("  ");
+                    	        LOG_DEBUG("%02X ", entry_bytes[j]);
+                    	        if (j % 8 == 7) LOG_DEBUG("\n");
+                    	    }
+                    	    if (sizeof(LogEntry) % 8 != 0) LOG_DEBUG("\n");*/
+
+
+
                         // Formater le message pour l'envoi
                         char formatted_message[LOG_ENTRY_SIZE-7];  // 8 caractères + null terminator
                         uint8_t message_size = LOG_ENTRY_SIZE - 8;  // 8 octets
@@ -208,7 +272,46 @@ uint16_t log_read(uint16_t debut_entry, uint16_t max_entries, uint8_t dest)
                         }
                         
                         // Envoyer le log via envoie_mess_ASC
-                        envoie_mess_ASC("%cLO%i%c%c%c%s", dest, entry.code, entry.c1, entry.c2, entry.c3, formatted_message);
+                        if (!type)
+                        {
+
+                            time_t rawtime = (time_t)entry.timestamp;
+                            struct tm *timeinfo = localtime(&rawtime);
+
+                            char time_str[40];
+                            if (timeinfo != NULL) {
+                                snprintf(time_str, sizeof(time_str), "%02d/%02d/%04d %02d:%02d:%02d",
+                                        timeinfo->tm_mday,
+                                        timeinfo->tm_mon + 1,
+                                        timeinfo->tm_year + 1900,
+                                        timeinfo->tm_hour,
+                                        timeinfo->tm_min,
+                                        timeinfo->tm_sec);
+                            }
+                            else {
+                                strcpy(time_str, "Invalid");  // Valeur par défaut
+                            }
+                                envoie_mess_ASC("%cLO%c:%i %i %i %s %s\r\n", dest, entry.code, entry.c1, entry.c2, entry.c3, time_str, formatted_message);
+                        }
+                        else {
+                        	if (!index_bufferTx)
+                        	{
+                        		bufferTx_log[0]=dest;
+                        		bufferTx_log[2]='L';
+                        		bufferTx_log[3]='O';
+                        	}
+                        	//memcpy((char*)bufferTx_log, (char*)entry.message, 16);
+                        	memcpy((char*)bufferTx_log+5+index_bufferTx*16, (char*)&entry.timestamp, 16);
+                        	index_bufferTx++;
+                        	// envoi message
+                        	if (index_bufferTx >= (MESS_LG_MAX-6)/16)
+                        	{
+                        		bufferTx_log[1]= 2 + index_bufferTx*16;
+                        		bufferTx_log[4]= index_bufferTx;
+                        		envoie_mess_bin( bufferTx_log );
+                        		index_bufferTx = 0;
+                        	}
+                        }
                         entries_read++;
                     }
                 }
@@ -217,6 +320,14 @@ uint16_t log_read(uint16_t debut_entry, uint16_t max_entries, uint8_t dest)
         }
         else
         	break;
+    }
+    // flush le buffer binaire
+    if ((index_bufferTx) && (type))
+    {
+		bufferTx_log[1]= 2 + index_bufferTx*16;
+		bufferTx_log[4]= index_bufferTx;
+		envoie_mess_bin( bufferTx_log );
+		index_bufferTx = 0;
     }
     
     return entries_read;
@@ -451,11 +562,16 @@ static HAL_StatusTypeDef log_read_entry(uint32_t page_addr, uint16_t entry_index
 /**
  * @brief Écrit une entrée de log dans une page
  */
-static HAL_StatusTypeDef log_write_entry_to_page(uint32_t page_addr, uint16_t entry_index, const LogEntry *entry)
+static HAL_StatusTypeDef log_write_entry_to_page(uint32_t entry_addr, const LogEntry *entry)
 {
-    if ((entry == NULL) || (entry_index >= LOG_MAX_ENTRIES_PER_PAGE) || (!entry_index)) {
+	uint8_t err=0;
+
+    if (entry == NULL)  {
         return HAL_ERROR;
     }
+
+    LOG_INFO("log entry adr:%08X", entry_addr);
+    osDelay(400);
     
     // Désactiver les interruptions
     __disable_irq();
@@ -463,20 +579,22 @@ static HAL_StatusTypeDef log_write_entry_to_page(uint32_t page_addr, uint16_t en
     // Déverrouiller la flash
     HAL_FLASH_Unlock();
     
-    uint32_t entry_addr = page_addr  + (entry_index * LOG_ENTRY_SIZE);
-    
+    HAL_StatusTypeDef status;
     // Écrire l'entrée
-    HAL_StatusTypeDef status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, 
-                                               entry_addr, 
-                                               *(uint64_t*)entry);
-    
+    for (uint8_t i=0; i<LOG_ENTRY_SIZE/8; i++)
+	{
+        status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD,
+                                               entry_addr+(i*8),
+											   *(uint64_t*)((uint8_t*)entry + (i * 8)));
+        if (status) err=1;
+	}
     // Verrouiller la flash
     HAL_FLASH_Lock();
     
     // Réactiver les interruptions
     __enable_irq();
     
-    return status;
+    return err;
 }
 
 /**

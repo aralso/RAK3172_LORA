@@ -21,7 +21,7 @@
  mesure mode STOP, watchdog, adresses LORA/Uart
  clignot sorties, pwm,  antirebond 2 boutons, 2e uart
 
- v1.5 10/2025 : eeprom et log_flash
+ v1.5 10/2025 : eeprom, log_flash, rtc, messages binaires, attente dans en_queue
  v1.4 09/2025 : fct : refonte reception uart, watchdog contextuel, traitement_rx, opti stack
  v1.3 09/2025 : fct : augmentation stack taches, erreur_freertos
  v1.2 09/2025 : pile envoi uart, timer, code_erreur
@@ -78,7 +78,14 @@ IWDG_HandleTypeDef hiwdg;
 
 RTC_HandleTypeDef hrtc;
 
-
+/* Stack utilisée (en mots de 32 bits)
+ création tache sans rien : 48
+ LOG_INFO : 58
+ LOG %s : 78
+ envoie_mess_ASC simple: 64
+ envoie_mess_ASC %s : 76
+ eeprom : 90
+ */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
@@ -109,6 +116,8 @@ const osThreadAttr_t Appli_Task_attributes = {
 };
 
 /* USER CODE BEGIN PV */
+
+uint8_t test_val=0;
 
 /* USER CODE END PV */
 
@@ -244,7 +253,6 @@ int main(void)
   HAL_Delay(500);
 
   init_communication();
-  init_functions();
 
 
   /* Create the thread(s) */
@@ -284,6 +292,7 @@ int main(void)
   HAL_Delay(500);
 
   /* USER CODE BEGIN RTOS_THREADS */
+  init_functions();
 
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -717,13 +726,45 @@ void StartDefaultTask(void *argument)
     uint32_t current_time = HAL_GetTick();
     
     // Afficher le statut du watchdog toutes les 30 secondes
-    if (current_time - last_status_time > 91000) {
+    if (current_time - last_status_time > 10000) {
         //watchdog_print_status();
         last_status_time = current_time;
-        osDelay(3000); // Attendre 3 seconde
+        //osDelay(3000); // Attendre 3 seconde
 		//check_stack_usage();
 
-    }
+        uint8_t value;
+        if (test_val ==1)
+        	LOG_INFO("toto");
+        if (test_val == 2)
+            LOG_INFO("test:FLASH_PAGE_SIZE: %i octets", 1233330);
+        if (test_val == 3)
+        {
+        	char messa[10];
+        	messa[0] = '1';
+            messa[1] = 'S';  // Accusï¿½ reception ok : S1
+            messa[2] = '1';
+            messa[3] = car_fin_trame;
+            envoie_mess_ASC((const char*)messa);
+        }
+        if (test_val == 4)
+        {
+        	uint8_t messa = 'c';
+            envoie_mess_ASC("1te%cVAnal %i", messa, 12);
+        }
+        if (test_val == 5)
+        	EEPROM_Read8(1, &value);
+        if (test_val == 6)
+        	EEPROM_Write8(1, 12);
+        if (test_val == 7)
+        	EEPROM_Read8(1, &value);
+        if (test_val == 8)
+        	log_read(1, 1, '1', 0);
+        if (test_val ==9)
+        	log_write('T', 1, 0x02, 0x03, "testRxBl");    }
+		if (test_val ==10)
+			log_read(1, 4, '1', 0);
+   	    if (test_val ==11)
+		    log_read(1, 1, '1', 1);
     
     // Sauvegarder les données de diagnostic toutes les 60 secondes
     if (current_time - last_save_time > 60000) {
@@ -901,15 +942,12 @@ void Appli_Tsk(void *argument)
     //check_flash_permissions();
     //osDelay(1000);
 
-    // Initialiser l'EEPROM
-    if (log_init() == HAL_OK) {
-        LOG_INFO("LOG initialisee");
-
-        // Test simple
-    } else {
-        LOG_ERROR("Erreur LOG");
-    }
     osDelay(1000);
+
+    if (EEPROM_Init() == HAL_OK)
+            LOG_INFO("EEPROM initialisee");
+         else
+            LOG_ERROR("Erreur EEPROM");
 
     /*if (EEPROM_Init() == HAL_OK) {
         LOG_INFO("eeprom initialisee");
@@ -1028,13 +1066,17 @@ void Appli_Tsk(void *argument)
 					HAL_NVIC_SystemReset();
 					break;
 				}
+				case EVENT_WATCHDOG_CHECK: {
+				    watchdog_check_all_tasks();
+				    break;
+				}
 				case EVENT_TIMER_24h: {
-					envoie_mess_ASC("Message périodique 24h\r\n");
+					envoie_mess_ASC("1Message periodique 24h\r\n");
 
 					// Debug : afficher le temps restant avant la prochaine expiration
 					TickType_t expiry = xTimerGetExpiryTime(HTimer_24h);
 					TickType_t now = xTaskGetTickCount();
-					printf("Il reste %lu ticks avant la prochaine expiration\n",
+					LOG_INFO("Il reste %lu ticks avant la prochaine expiration\n",
 						   (expiry > now) ? (expiry - now) : 0);
 					break;
 				}
@@ -1060,17 +1102,23 @@ void Appli_Tsk(void *argument)
 					//osDelay(100);
 					break;
 				}
-
+				case EVENT_UART_RAZ: {
+					LOG_WARNING("RX Timeout for UART %i", evt.source);
+					code_erreur=timeout_RX;   //timeout apres 1 car Recu
+				    err_donnee1= evt.source+'0';
+				    raz_Uart(evt.data);
+				    break;
+				}
 
 				default: {
 					LOG_WARNING("Unknown event type: %d", evt.type);
 					break;
 				}
-		        if (code_erreur)
-		            envoi_code_erreur();
-
 			}
-        } else {
+	        if (code_erreur)
+	            envoi_code_erreur();
+        }
+        else {
             LOG_ERROR("Failed to receive event: %d", status);
         }
         osDelay(100);

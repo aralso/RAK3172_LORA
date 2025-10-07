@@ -5,6 +5,7 @@
  *      Author: Tocqueville
  */
 
+#include <main.h>
 #include <communication.h>
 #include <fonctions.h>
 #include <eeprom_emul.h>
@@ -100,11 +101,12 @@ uint8_t mess_dequeue(uint8_t *data, uint8_t *len);
 void TIMEOUT_RX_Callback(TimerHandle_t xTimer)
 {
 	uint8_t num_uart = (uint8_t)(uint32_t)pvTimerGetTimerID(xTimer);  // timer_id
-	LOG_WARNING("RX Timeout for UART %lu", num_uart);
-	    code_erreur=timeout_RX;   //timeout apres 1 car Recu
-    err_donnee1= num_uart+'0';
-    buffer_index = 0;
-    raz_Uart(num_uart);
+
+	event_t evt = { EVENT_UART_RAZ, num_uart, 0 };
+	if (xQueueSend(Event_QueueHandle, &evt, 0) != pdPASS)
+	{
+	    LOG_ERROR("Event uart timeout - message lost");
+	}
 }
 
 
@@ -151,9 +153,11 @@ void init_communication(void)
 * @brief Function implementing the Uart1_Task thread.
 * @param argument: Not used
 ACSII : longueur n'inclut pas le car_fin_trame (inclus emetteur) : 5 pour RLSLO (en fait 6)
-Binaire : RL2SLO => lg=2 (en fait 6)
+1SLO : 49 83 76 79 13
+Binaire : 12SLO => lg=2 (en fait 6)  B1 02 53 4C 4F
 * @retval None
 */
+
 void Uart_RX_Tsk(void *argument)
 {
 
@@ -163,6 +167,8 @@ void Uart_RX_Tsk(void *argument)
     //HAL_Delay(500);
 
     //LOG_INFO("Uart_RX_Task started with watchdog protection");
+    //uint8_t k=0;
+    expected_length=0;
 
     for(;;)
     {
@@ -171,13 +177,21 @@ void Uart_RX_Tsk(void *argument)
 
         // Lire un caractère
 		uint8_t status = HAL_UART_Receive(&huart2, &rx_char, 1, 100);
+
+		/*k+=1;
+		if (!(k%250))
+			HAL_UART_Transmit(&huart2, &rx_char, 1, 3000);*/
+
         if (status == HAL_OK)
         {
+    		//k+=1;
+    		//if (!(k%3))
+    			HAL_UART_Transmit(&huart2, &rx_char, 1, 3000);
+
         	car_valid=1;
    		  //LOG_INFO("Received: 0x%02X ('%c')", rx_char, (rx_char >= 32 && rx_char <= 126) ? rx_char : '.');
 
             // Premier caractère : déterminer le type
-
             if (buffer_index == 0)
             {
                 // Vérifier le bit de poids fort
@@ -185,7 +199,7 @@ void Uart_RX_Tsk(void *argument)
                 {
                 	if ((rx_char==13) || (rx_char==10) || (!rx_char)) car_valid=0;  // pas CR ou LF en premier car
                     message_type = 1;  // Message binaire
-                    LOG_DEBUG("Binary message detected");
+                    //LOG_DEBUG("Binary message detected");
                 }
                 else
                 {
@@ -194,10 +208,13 @@ void Uart_RX_Tsk(void *argument)
                 }
             }
 
+            //LOG_INFO("Received: %i 0x%02X", buffer_index, rx_char);
+
             // Ajouter au buffer
             if ((buffer_index < sizeof(mess_rx_uart.data) - 2) && (car_valid))
             {
-   			    if ((buffer_index==0) && (rx_char=='1'))  rx_char=My_Address;  // remplacement de 1 par mon adresse
+   			    if ((buffer_index==0) && ((rx_char)=='1'))  rx_char=My_Address;  // remplacement de 1 par mon adresse
+   			    if ((buffer_index==0) && ((rx_char)==0xB1))  rx_char=(My_Address|0x80);  // remplacement de 1 par mon adresse
 
             	mess_rx_uart.data[buffer_index++] = rx_char;
    			    xTimerReset(UartSt[0].h_timeout_RX, 0); // timeout au bout de x secondes si on ne recoit pas la fin du message
@@ -208,6 +225,7 @@ void Uart_RX_Tsk(void *argument)
 	            	mess_rx_uart.data[buffer_index++] = '1';
 				  }
 				#endif
+
                 // Traitement selon le type
                 if (message_type == 0)
                 {
@@ -253,23 +271,26 @@ void Uart_RX_Tsk(void *argument)
                     // Message binaire : longueur dans le 3ème octet
                     if (buffer_index == 3)
                     {
-                        expected_length = mess_rx_uart.data[2]; // 3ème octet = longueur
-                        LOG_DEBUG("Binary message length: %d", expected_length);
-                        if ((expected_length <3) || (expected_length>(MESS_LG_MAX+3)))
+                        expected_length = mess_rx_uart.data[2]; // 3ème octet = longueur, min1
+                        //LOG_DEBUG("Binary message length: %d", expected_length);
+                        if ((!expected_length) || (expected_length>(MESS_LG_MAX-3)))
                         {
                         	code_erreur=erreur_rx_uart_bin;
                         	err_donnee1 = 1;
                         	err_donnee2 = expected_length;
                             buffer_index = 0;
+                            expected_length = 0;
                         }
                     }
 
                     // Vérifier si on a reçu toute la longueur
-                    if (buffer_index >= 3 && buffer_index >= expected_length + 3)
+                    if ((buffer_index >= 3) && (buffer_index >= expected_length + 4))
                     {
+                    	//LOG_INFO("ok fin bin");
+                    	//osDelay(100);
                         // Message binaire terminé
    					    xTimerStop(UartSt[0].h_timeout_RX, 0);  // raz timeout
-   					    mess_rx_uart.length = buffer_index;
+   					    mess_rx_uart.length = buffer_index-1;
    					    mess_rx_uart.type = 1; // Binaire
    					    mess_rx_uart.source = 2; // UART2
                         //message.timestamp = HAL_GetTick();
@@ -309,7 +330,7 @@ void Uart_RX_Tsk(void *argument)
 		    osDelay(100);
 		}
 
-		osDelay(100);
+		osDelay(4);
 		//LOG_INFO(".");
 	}
   /* USER CODE END Uart1_Tsk */
@@ -326,13 +347,14 @@ void reception_message_Uart2(in_message_t *msg)
 	}
 	else
 	{
+
 		// Message binaire
-		LOG_INFO("Received binary message, length: %d", msg->length);
+		/*LOG_INFO("Received binary message, length: %d", msg->length);
 		LOG_DEBUG("Binary data: ");
 		for (int i = 0; i < msg->length; i++)
 		{
 			LOG_DEBUG("%02X ", msg->data[i]);
-		}
+		}*/
 	}
 
 	// Appeler votre fonction de traitement existante
@@ -344,8 +366,9 @@ void reception_message_Uart2(in_message_t *msg)
 
 void raz_Uart(uint8_t num_uart)  // raz car en reception (suite timeout)
 {
+   expected_length = 0;
    buffer_index = 0;
-   xTimerStop(UartSt[0].h_timeout_RX, 0);  // raz timeout RX
+   //xTimerStop(UartSt[0].h_timeout_RX, 0);  // raz timeout RX
 }
 
 
@@ -389,7 +412,8 @@ uint8_t envoie_mess_ASC(const char* format, ...)
 	return res;
 }
 
-// P2RS => PU2RS (lg=5)
+// 11OK :  31 01 4F 4B => B1 55 01 4F 4B (lg=1, en fait:5)
+// P1RS => PU1RS (lg=5)
 uint8_t envoie_mess_bin(const uint8_t *buf)
 {
 	uint8_t len;
@@ -398,18 +422,23 @@ uint8_t envoie_mess_bin(const uint8_t *buf)
 	if (buf == NULL) {
 		return 1; // Erreur : buffer nul
 	}
-	len = buf[1]+2;
+	len = buf[1]+3;
 
-	// Vérifier si len<4 ou la longueur dépasse la taille maximale
-	if ((len < 4) || ( (len+2) >= MESS_LG_MAX)) {
+	// Vérifier si len<3 ou la longueur dépasse la taille maximale
+	if ((len < 3) || ( (len+2) >= MESS_LG_MAX)) {
 		return 2; // Erreur : dépassement de buffer
 	}
 
 	// Copier buf dans mess
-	memcpy(mess+1, buf, len); // decalage de 2
+	memcpy(mess+1, buf, len); // decalage de 11TE
 	len++; // pour emetteur  : 5
-	mess[0] = buf[0] & 0x80;
+	mess[0] = buf[0] | 0x80;
 	mess[1] = My_Address;
+
+    /*for (int j = 0; j < len; j++) {
+        LOG_DEBUG("0x%02X ", mess[j]);
+    }*/
+
 
 	// Envoyer le message
 	uint8_t res = envoie_routage(mess, len);
@@ -424,7 +453,6 @@ uint8_t envoie_routage( uint8_t *mess, uint8_t len)  // envoi du message
 	retc=1;
 
 	destinataire = mess[0] & 0x7F;
-	//long_def = message_temp[0] & 0x80; // 0 si message texte, 80 si message hexa
 
 	if (((destinataire == My_Address) && (My_Address!='1')) || (destinataire == '0'))   // envoi sur soi-meme -loop
 	{
@@ -452,9 +480,23 @@ uint8_t envoie_routage( uint8_t *mess, uint8_t len)  // envoi du message
 		   if (j==3)
 			   retc = mess_enqueue(mess, len);
 		   if (j==6)
-			  retc = send_lora_message((const char*) mess, len, destinataire);
-  		   if (j==7)
-			  retc = send_lora_message((const char*)mess, len,  table_routage[i][3]);
+		   {
+			    //HAL_Delay(10);
+			    //char uart_msg[50];
+			    //snprintf(uart_msg, sizeof(uart_msg), "Lora1: %s \r\n", mess);
+			    //HAL_UART_Transmit(&huart2, (uint8_t*)uart_msg, strlen(uart_msg), 3000);
+			    //HAL_Delay(10);
+			    //UART_SEND("Send1\n\r");
+			  //retc = send_lora_message((const char*) mess, len, destinataire);
+		   }
+  		   if (j==7) {
+			    //HAL_Delay(10);
+			    //char uart_msg[50];
+			    //snprintf(uart_msg, sizeof(uart_msg), "Lora2: %s \r\n", mess);
+			    //HAL_UART_Transmit(&huart2, (uint8_t*)uart_msg, strlen(uart_msg), 3000);
+			    //HAL_Delay(10);
+			  //retc = send_lora_message((const char*)mess, len,  table_routage[i][3]);
+  		   }
  	  }
   }
   return retc;
@@ -465,30 +507,61 @@ uint8_t envoie_routage( uint8_t *mess, uint8_t len)  // envoi du message
 // Ajout d’un message
 uint8_t mess_enqueue(const uint8_t *data, uint8_t len)
 {
-	osStatus_t status = osMutexAcquire(bufferMutex, 10000);
-	if (status != osOK) return 3;
+
+    if ((len < 5) || (len > MESS_LG_MAX))
+    {
+    	return 1;
+    }
+
+
+    if (head >= MESS_BUFFER_SIZE) {
+            head = 0; // Reset si corruption
+            tail = 0;
+    }
+    uint32_t start_time = HAL_GetTick();
 
     uint16_t free_space;
-    uint16_t head_prov = head;
 
     if (head >= tail)
         free_space = MESS_BUFFER_SIZE - (head - tail) - 1;
     else
         free_space = (tail - head) - 1;
 
-    if (free_space < (len + 1)) {
-        osMutexRelease(bufferMutex);
-        return 1; // pas assez de place
-    }
+    /*HAL_Delay(10);
+    char uart_msg[50];
+    snprintf(uart_msg, sizeof(uart_msg), "Uart send1: %i \r\n", free_space);
+    HAL_UART_Transmit(&huart2, (uint8_t*)uart_msg, strlen(uart_msg), 3000); \
+    HAL_Delay(10);*/
+    //UART_SEND("Send1\n\r");
 
-    if ((len < 5) || (len > MESS_LG_MAX))
-    {
-    	return 2;
-    }
-    if (head >= MESS_BUFFER_SIZE) {
-            head = 0; // Reset si corruption
-            tail = 0;
-    }
+
+	 while (free_space < (uint16_t)(len + 10))
+	 {
+		    /*HAL_Delay(10);
+		    char uart_msg[50];
+		    snprintf(uart_msg, sizeof(uart_msg), "Uart Att: %i \r\n", free_space);
+		    HAL_UART_Transmit(&huart2, (uint8_t*)uart_msg, strlen(uart_msg), 3000); \
+		    HAL_Delay(10);*/
+	        //UART_SEND("SendAtt\n\r");
+        osDelay(100);  // Attendre 100ms
+		if ((HAL_GetTick() - start_time) > 2000)
+		{
+			//LOG_ERROR("Queue full timeout after %lu ms", 2000);
+		    osMutexRelease(bufferMutex);
+		    log_write('E', log_w_err_uart_bloque, 0x02, 0x03, "uartRxBl");
+		    return 2;  // Timeout
+		}
+	    if (head >= tail)
+	        free_space = MESS_BUFFER_SIZE - (head - tail) - 1;
+	    else
+	        free_space = (tail - head) - 1;
+	 }
+    //UART_SEND("Send2\n\r");
+
+	osStatus_t status = osMutexAcquire(bufferMutex, 5000);
+	if (status != osOK) return 3;
+
+    uint16_t head_prov = head;
 
     mess_buffer[head_prov] = len;
     head_prov = (head_prov + 1) % MESS_BUFFER_SIZE;
@@ -572,6 +645,7 @@ void Uart_TX_Tsk(void *argument)
 {
     uint8_t msg[MESS_LG_MAX];
     uint8_t len;
+    //uint32_t last_status_time = 0;
 
     // Démarrer la surveillance watchdog pour cette tâche
     watchdog_task_start(WATCHDOG_TASK_UART_TX);
@@ -582,6 +656,25 @@ void Uart_TX_Tsk(void *argument)
         // Enregistrer un heartbeat pour le watchdog
         watchdog_task_heartbeat(WATCHDOG_TASK_UART_TX);
         
+        /*uint32_t current_time = HAL_GetTick();
+
+        // Afficher le statut du watchdog toutes les 5 minutes
+        if (current_time - last_status_time > 300000) {
+            //watchdog_print_status();
+            last_status_time = current_time;
+		    HAL_Delay(100);
+		    UBaseType_t stack_high_water_mark;
+		    stack_high_water_mark = uxTaskGetStackHighWaterMark(Uart_TX_TaskHandle);
+		    //LOG_INFO("Uart_TX_Task: %i free", stack_high_water_mark);
+		    char uart_msg[50];
+		    snprintf(uart_msg, sizeof(uart_msg), "Uart stk: %lu \r\n", stack_high_water_mark);
+		    HAL_UART_Transmit(&huart2, (uint8_t*)uart_msg, strlen(uart_msg), 3000); \
+		    HAL_Delay(100);
+
+            osDelay(3000); // Attendre 3 seconde
+    		//check_stack_usage();
+         }*/
+
         uint8_t stat;
         stat = mess_dequeue(msg, &len);
         if (stat == 0)
@@ -741,11 +834,16 @@ uint8_t get_log_level(void)
 
 void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'inclut pas le car_fin_trame (inclus emetteur) : 4 pour RLT1
 {       // def :longueur n'inclut pas la longueur (inclus l'emetteur) : 4 pour RL1T1
-  uint8_t a,  crc, long_def;//, emet_m;
+  uint8_t a,  crc, type;//, emet_m;
   //uint8_t tempo1, tempo2, tempo3, tempo4;
   //unsigned char volatile   * pregistre_xdata;  // pointeur vers Memory (ROM, RAM, EEprom, registres)
   //unsigned int volatile    * pregistre_int_xdata;  // pointeur vers Memory (ROM, RAM, EEprom, registres)
   //uint32_t i32;
+
+  type = message_in[0] & 0x80;
+
+  //for (a=0; a<longueur_m+1; a++)
+  //    LOG_DEBUG("%i:%02X ", a, message_in[a]);
 
   //raz_timer_sleep ();
   message[0] = message_in[1]; // emetteur devient le destinataire du futur message
@@ -840,13 +938,14 @@ void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'
           code_erreur =erreur_mess;
       }
 
-      long_def = message_in[0] & 0x80;
-      if (long_def)         // Si longueur definie dans le message
+      if (type)         // message binaire - longueur definie dans le message
       {
           for (a = 2; a < longueur_m; a++) // 2 pour long=3, RL0T - suppression de la longueur
             message_in[a] = message_in[a + 1];
       }
 
+      //for (a=0; a<longueur_m+1; a++)
+      //    LOG_DEBUG("bis %i:%02X ", a, message_in[a]);
 
       crc = 1;
 
@@ -900,6 +999,24 @@ void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'
               {
                   envoie_mess_ASC("1OKK");
               }
+              if ( (message_in[4] =='V')  && (longueur_m==5))  // 1SLV : version
+              {
+                  envoie_mess_ASC("%cVer:%s", message[0], CODE_VERSION);
+              }
+              if ( (message_in[4] =='T')  && (longueur_m==5))  // 1SLT : Type de node
+              {
+                  envoie_mess_ASC("%cType:%s", message[0], CODE_TYPE);
+              }
+              if ( (message_in[4] =='B')  && (longueur_m==5))  // 1SLB
+              {
+            	  // optimum :mess_bin[0] = 'U'; mess_bin[1] = 1; mess_bin[2] = 'O';
+            	  // optimum :uint8_t mess_bin[10] = {'U', 1, 'O', 'K'};
+            	  // moins bien: memcpy(mess_bin, "U\1OK", 4);
+            	  // pas bien  : sprintf((char*)mess_bin, "U%cOK", 1);
+            	  uint8_t mess_bin[10] = {'1', 1, 'O', 'K'};
+
+                  envoie_mess_bin(mess_bin);
+              }
               if ( (message_in[4] =='T') && (message_in[5] =='a') && (longueur_m==6))  // SLTa  Stack des taches
   				 check_stack_usage();
 
@@ -933,7 +1050,7 @@ void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'
 				char short_message[8];
 				strncpy(short_message, (char*)message_in, 7);
 				short_message[7] = '\0';
-			    if (log_write(5, 0x01, 0x02, 0x03, short_message) == 0) {
+			    if (log_write('5', 0x01, 0x02, 0x03, short_message) == 0) {
 				  LOG_INFO("LOG écrit");
 			    }   else {
 				  LOG_ERROR("Erreur écriture LOG ");
@@ -941,10 +1058,40 @@ void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'
 		      }
 		      if ( (message_in[4] =='A')  && (longueur_m==7))  // LEcture Log 1TEA01
 		      {
-			     uint16_t logs_read = log_read(message_in[5]-'0', message_in[6]-'0', '1');
+			     uint16_t logs_read = log_read(message_in[5]-'0', message_in[6]-'0', '1', 0);
 			     LOG_INFO("Logs lus: %i", logs_read);
 		      }
           }
+          if ((message_in[2] == 'H'))
+          {
+          	if (message_in[3] == 'E')  // HEHhhmmss : Ecriture heure
+            {
+				if (message_in[4] == 'H')  // HEHhhmmss : Ecriture heure
+				{
+					set_rtc_time_from_string((const char*)message_in+5);
+				}
+				if (message_in[4] == 'D')  // HEDjjmmaa : Ecriture date
+				{
+					set_rtc_date_from_string((const char*)message_in+5);
+				}
+				if (message_in[4] == 'S')  // HESxxxx : Ecriture date-heure avec timestamp 32bits
+					// 0xB1 6 72 69 83 104 229 1 0
+				{
+					uint32_t timestamp;
+					memcpy(&timestamp, message_in + 5, 4);
+					LOG_INFO("HES:Timestamp: %08X", timestamp);
+					set_rtc_from_timestamp(timestamp);
+				}
+            }
+        	if (message_in[3] == 'L')
+            {
+            	if (message_in[4] == 'H')  // 1HLH : Lecture Heure
+                {
+            		display_current_time();
+                }
+            }
+          }
+
           if ((message_in[2] == 'L') && (message_in[3] == 'O'))  // log_flash
           {
 		      if ( (message_in[4] =='R')  && (message_in[5] =='a') &&  (message_in[6] =='z')
@@ -958,7 +1105,7 @@ void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'
 		    	  log_get_stats(&total_entries, &free_space);
 		      }
 		      if ( (message_in[4] =='E')  && (message_in[5] =='E') &&  (message_in[6] =='Z')
-		    		  && (longueur_m==7))  // Force effacement page eeprom 1LOEEZ
+		    		  && (longueur_m==7))                   // Force effacement page eeprom 1LOEEZ
 		      {
 		    	  EEPROM_Format();
 		      }
@@ -968,6 +1115,12 @@ void traitement_rx (uint8_t* message_in, uint8_t longueur_m) // var :longueur n'
 		    	  EEPROM_GetStats(&total_entries, &free_space);
 		      }
          }
+          if ((message_in[2] == 'T'))  // test
+          {
+              if ((message_in[3] == 'A') && (longueur_m==6))  // 1TAxx => test_val
+            	  test_val = (message_in[4]-'0')*10 + (message_in[5]-'0');
+
+          }
       }
   }
 }

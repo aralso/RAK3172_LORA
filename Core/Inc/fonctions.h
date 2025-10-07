@@ -32,8 +32,10 @@ typedef enum  {
     EVENT_WAKE_UP,
     EVENT_SLEEP,
     EVENT_SYSTEM_RESET,
+	EVENT_WATCHDOG_CHECK,
     EVENT_TIMER_24h,
-    EVENT_TIMER_20min
+    EVENT_TIMER_20min,
+	EVENT_UART_RAZ
 } EventId_t;
 
 #define TIMER_PERIOD_MS  120000   // 50s
@@ -57,7 +59,6 @@ typedef enum {
     WATCHDOG_TASK_COUNT  // Nombre total de tâches surveillées
 } watchdog_task_id_t;
 
-#define WATCHDOG_TASK_NB 6
 
 typedef enum {
     WATCHDOG_CONTEXT_ACTIVE = 0,    // Tâche active (surveillance normale)
@@ -79,9 +80,9 @@ typedef struct {
 } watchdog_task_info_t;
 
 // Configuration du watchdog
-#define WATCHDOG_TIMEOUT_MS        30000   // 30 secondes par défaut
+#define WATCHDOG_TIMEOUT_MS        30   // 60 secondes par défaut
 #define WATCHDOG_ERROR_THRESHOLD   3       // Nombre d'erreurs avant reset
-#define WATCHDOG_CHECK_INTERVAL    5000    // Vérification toutes les 5 secondes
+#define WATCHDOG_CHECK_INTERVAL    10000    // Vérification toutes les 5 secondes
 
 // Fonctions du système watchdog
 void watchdog_init(void);
@@ -101,6 +102,13 @@ const char* get_reset_cause_string(uint32_t reset_flags);
 void save_diagnostic_data(void);
 void load_diagnostic_data(void);
 void check_stack_usage(void);
+uint32_t get_rtc_timestamp(void);
+void display_current_time(void);
+void set_rtc_time_date(void);
+HAL_StatusTypeDef set_rtc_from_timestamp(uint32_t timestamp);
+HAL_StatusTypeDef set_rtc_date_from_string(const char* date_str);
+HAL_StatusTypeDef set_rtc_time_from_string(const char* time_str);
+
 
 
 #endif /* INC_FONCTIONS_H_ */

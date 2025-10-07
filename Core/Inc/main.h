@@ -32,6 +32,8 @@ extern "C" {
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+extern RTC_HandleTypeDef hrtc;
+
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
@@ -41,6 +43,11 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
+
+#define CODE_VERSION  "1.5"
+#define CODE_TYPE "A"  // A:End_node Radar
+
+extern uint8_t test_val;
 
 /* USER CODE END EC */
 

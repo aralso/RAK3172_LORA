@@ -16,7 +16,7 @@
 #define EEPROM_PAGE_SIZE          2048        // Taille d'une page flash (STM32WLE5)
 #define EEPROM_PAGE_COUNT         4           // Nombre de pages utilisées
 #define EEPROM_DATA_SIZE          1016        // Taille des données utilisateur (1016 variables de 16 bits ou la moitie en 32 bits)
-#define EEPROM_HEADER_SIZE        16          // Taille de l'en-tête
+#define EEPROM_HEADER_SIZE        8          // Taille de l'en-tête
 #define EEPROM_RECORD_SIZE        8           // Taille d'un enregistrement 8/16 bits
 #define EEPROM_RECORD_SIZE_32     8           // Taille d'un enregistrement 32 bits
 #define EEPROM_MAX_RECORDS        ((EEPROM_PAGE_SIZE - EEPROM_HEADER_SIZE) / EEPROM_RECORD_SIZE)
@@ -31,8 +31,8 @@
 // États des pages
 typedef enum {
     EEPROM_PAGE_ERASED = 0xFFFF,
-    EEPROM_PAGE_RECEIVE_DATA = 0xEEEE,
-    EEPROM_PAGE_VALID_PAGE = 0x0088,
+    EEPROM_PAGE_VALID_PAGE = 0xEEEE,
+    EEPROM_PAGE_RECEIVE_DATA = 0x0088,
     EEPROM_PAGE_INVALID = 0x0000
 } eeprom_page_status_t;
 
@@ -45,16 +45,16 @@ typedef struct {
 } eeprom_page_header_t;
 
 // Structure d'enregistrement pour 8/16 bits
-typedef struct {
+/*typedef struct {
     uint16_t address;            // Adresse des données
     uint16_t data;               // Données (8 ou 16 bits)
     uint32_t crc;                // CRC de l'enregistrement
-} eeprom_record_t;
+} eeprom_record_t;*/
 
 // Structure d'enregistrement pour 32 bits
 typedef struct {
-    uint16_t address;            // Adresse des données
     uint32_t data;               // Données (32 bits)
+    uint16_t address;            // Adresse des données
     uint16_t crc;                // CRC réduit
 } eeprom_record_32_t;
 
